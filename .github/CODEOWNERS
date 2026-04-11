@@ -1,0 +1,21 @@
+# CODEOWNERS — RideFleet Core
+#
+# Mudanças em spec/ exigem aprovação de todos os representantes do core.
+# Preencher com os usuários GitHub do subgrupo core.
+
+# Spec da API: qualquer mudança exige revisão de todos
+spec/                   @core-team
+
+# Conformance e implementação do core
+conformance/            @core-team
+core/                   @core-team
+
+# Infra e observabilidade
+infra/                  @core-team
+observability/          @core-team
+
+# Workflows de CI
+.github/workflows/      @core-team
+
+# Documentação
+docs/                   @core-team

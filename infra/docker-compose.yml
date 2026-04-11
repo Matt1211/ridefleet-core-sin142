@@ -1,0 +1,68 @@
+version: "3.9"
+
+# Docker Compose completo — core + todos os serviços de grupos.
+# Cada grupo deve adicionar seu serviço neste arquivo (ou usar extends).
+#
+# Uso: docker compose -f infra/docker-compose.yml up -d
+#
+# Para subir apenas o core + observabilidade:
+#   docker compose -f infra/docker-compose.core.yml up -d
+
+include:
+  - docker-compose.core.yml
+
+# ---------------------------------------------------------------------------
+# Serviços dos grupos (descomentar e preencher quando disponíveis)
+# ---------------------------------------------------------------------------
+
+# services:
+#
+#   group-a:
+#     image: ${GROUP_A_IMAGE}
+#     container_name: ridefleet-group-a
+#     ports:
+#       - "8081:8080"
+#     environment:
+#       - CORE_URL=http://core:8080/api/v1
+#     networks:
+#       - ridefleet-net
+#
+#   group-b:
+#     image: ${GROUP_B_IMAGE}
+#     container_name: ridefleet-group-b
+#     ports:
+#       - "8082:8080"
+#     environment:
+#       - CORE_URL=http://core:8080/api/v1
+#     networks:
+#       - ridefleet-net
+#
+#   group-c:
+#     image: ${GROUP_C_IMAGE}
+#     container_name: ridefleet-group-c
+#     ports:
+#       - "8083:8080"
+#     environment:
+#       - CORE_URL=http://core:8080/api/v1
+#     networks:
+#       - ridefleet-net
+#
+#   group-d:
+#     image: ${GROUP_D_IMAGE}
+#     container_name: ridefleet-group-d
+#     ports:
+#       - "8084:8080"
+#     environment:
+#       - CORE_URL=http://core:8080/api/v1
+#     networks:
+#       - ridefleet-net
+#
+#   group-e:
+#     image: ${GROUP_E_IMAGE}
+#     container_name: ridefleet-group-e
+#     ports:
+#       - "8085:8080"
+#     environment:
+#       - CORE_URL=http://core:8080/api/v1
+#     networks:
+#       - ridefleet-net

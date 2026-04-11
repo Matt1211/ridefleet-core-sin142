@@ -1,0 +1,23 @@
+{
+  "name": "ridefleet-contract-tests",
+  "version": "0.1.0",
+  "description": "Testes de contrato para os serviços do ecossistema RideFleet",
+  "private": true,
+  "scripts": {
+    "test": "jest --forceExit",
+    "test:ci": "jest --forceExit --reporters=default --reporters=jest-junit",
+    "lint": "eslint tests/"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "jest-junit": "^16.0.0",
+    "supertest": "^6.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/tests/**/*.test.js"],
+    "reporters": [
+      "default"
+    ]
+  }
+}

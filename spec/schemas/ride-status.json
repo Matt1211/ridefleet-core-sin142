@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ridefleet.core/schemas/ride-status.json",
+  "title": "RideStatus",
+  "description": "Estado atual de uma corrida na saga",
+  "type": "object",
+  "required": ["rideId", "state", "logicalTimestamp"],
+  "additionalProperties": false,
+  "properties": {
+    "rideId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "type": "string",
+      "enum": ["request", "match", "confirm", "in_transit", "complete", "compensating", "cancelled"],
+      "description": "Estado atual na máquina de estados da saga"
+    },
+    "assignedServiceId": {
+      "type": ["string", "null"],
+      "description": "ID do serviço ao qual a corrida foi atribuída (null se ainda em leilão)"
+    },
+    "logicalTimestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Relógio lógico do core no momento da última transição"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp wall-clock da última atualização"
+    }
+  }
+}

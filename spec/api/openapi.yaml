@@ -1,0 +1,443 @@
+openapi: "3.1.0"
+info:
+  title: RideFleet Core API
+  version: "0.1.0"
+  description: >
+    Contrato de integração entre os serviços do ecossistema RideFleet.
+    Toda comunicação entre grupos DEVE passar pelo core.
+    SIN 142 — Sistemas Distribuídos — UFV 2026/1
+
+servers:
+  - url: http://core:8080/api/v1
+    description: Core local (Docker Compose)
+  - url: http://localhost:8080/api/v1
+    description: Core local (desenvolvimento)
+
+paths:
+
+  /rides:
+    post:
+      summary: Solicitar nova corrida (ou delegação)
+      operationId: createRide
+      tags: [rides]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RideRequest'
+      responses:
+        "202":
+          description: Corrida aceita para processamento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideAccepted'
+        "409":
+          description: Conflito — lock não adquirido (corrida já em processamento)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "422":
+          description: Payload inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /rides/{rideId}/proposals:
+    post:
+      summary: Enviar proposta de aceite (leilão)
+      operationId: submitProposal
+      tags: [rides]
+      parameters:
+        - name: rideId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RideProposal'
+      responses:
+        "200":
+          description: Proposta registrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProposalAccepted'
+        "404":
+          description: Corrida não encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Corrida não está no estado `request`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /rides/{rideId}/status:
+    get:
+      summary: Consultar estado atual da corrida
+      operationId: getRideStatus
+      tags: [rides]
+      parameters:
+        - name: rideId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Estado atual da corrida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideStatus'
+        "404":
+          description: Corrida não encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    patch:
+      summary: Atualizar estado da corrida (transição de saga)
+      operationId: updateRideStatus
+      tags: [rides]
+      parameters:
+        - name: rideId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RideStatusUpdate'
+      responses:
+        "200":
+          description: Transição aceita
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideStatus'
+        "404":
+          description: Corrida não encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Serviço não detém o lock para esta corrida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "422":
+          description: Transição inválida para o estado atual
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /rides/{rideId}/audit:
+    get:
+      summary: Log causal completo da corrida (relógios lógicos)
+      operationId: getRideAuditLog
+      tags: [rides]
+      parameters:
+        - name: rideId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Log causal da corrida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLog'
+        "404":
+          description: Corrida não encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /locks/{rideId}:
+    post:
+      summary: Adquirir lock distribuído sobre a corrida
+      operationId: acquireLock
+      tags: [locks]
+      parameters:
+        - name: rideId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LockRequest'
+      responses:
+        "200":
+          description: Lock adquirido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LockResponse'
+        "409":
+          description: Lock já detido por outro serviço
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LockConflict'
+
+    delete:
+      summary: Liberar lock distribuído
+      operationId: releaseLock
+      tags: [locks]
+      parameters:
+        - name: rideId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [serviceId]
+              properties:
+                serviceId:
+                  type: string
+      responses:
+        "204":
+          description: Lock liberado com sucesso
+        "403":
+          description: Serviço não detém o lock
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Lock não encontrado para esta corrida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /health:
+    get:
+      summary: Health check do core
+      operationId: healthCheck
+      tags: [health]
+      responses:
+        "200":
+          description: Core operacional
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+components:
+  schemas:
+    RideRequest:
+      type: object
+      required: [originServiceId, passengerId, origin, destination, logicalTimestamp]
+      properties:
+        originServiceId:
+          type: string
+          description: ID do serviço que originou a corrida
+          example: "group-a"
+        passengerId:
+          type: string
+          example: "passenger-42"
+        origin:
+          $ref: '#/components/schemas/Location'
+        destination:
+          $ref: '#/components/schemas/Location'
+        logicalTimestamp:
+          type: integer
+          description: Relógio lógico de Lamport do serviço de origem
+          example: 17
+
+    RideProposal:
+      type: object
+      required: [serviceId, estimatedEta, estimatedPrice, logicalTimestamp]
+      properties:
+        serviceId:
+          type: string
+          example: "group-b"
+        estimatedEta:
+          type: integer
+          description: ETA em segundos
+          example: 240
+        estimatedPrice:
+          type: number
+          example: 18.50
+        logicalTimestamp:
+          type: integer
+          example: 22
+
+    RideStatus:
+      type: object
+      properties:
+        rideId:
+          type: string
+        state:
+          type: string
+          enum: [request, match, confirm, in_transit, complete, compensating, cancelled]
+        assignedServiceId:
+          type: string
+          nullable: true
+        logicalTimestamp:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+
+    RideStatusUpdate:
+      type: object
+      required: [newState, serviceId, logicalTimestamp]
+      properties:
+        newState:
+          type: string
+          enum: [match, confirm, in_transit, complete, compensating, cancelled]
+        serviceId:
+          type: string
+        logicalTimestamp:
+          type: integer
+
+    RideAccepted:
+      type: object
+      properties:
+        rideId:
+          type: string
+        logicalTimestamp:
+          type: integer
+        message:
+          type: string
+
+    ProposalAccepted:
+      type: object
+      properties:
+        rideId:
+          type: string
+        proposalId:
+          type: string
+        logicalTimestamp:
+          type: integer
+
+    AuditLog:
+      type: object
+      properties:
+        rideId:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+
+    AuditEvent:
+      type: object
+      properties:
+        eventType:
+          type: string
+          example: "ride_created"
+        serviceId:
+          type: string
+        logicalTimestamp:
+          type: integer
+        wallClockTime:
+          type: string
+          format: date-time
+        payload:
+          type: object
+
+    Location:
+      type: object
+      required: [lat, lng]
+      properties:
+        lat:
+          type: number
+          example: -20.7546
+        lng:
+          type: number
+          example: -42.8825
+        address:
+          type: string
+          example: "Av. P.H. Rolfs, s/n, Viçosa - MG"
+
+    LockRequest:
+      type: object
+      required: [serviceId]
+      properties:
+        serviceId:
+          type: string
+          example: "group-a"
+        ttlSeconds:
+          type: integer
+          default: 30
+          example: 30
+
+    LockResponse:
+      type: object
+      properties:
+        rideId:
+          type: string
+        serviceId:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+
+    LockConflict:
+      type: object
+      properties:
+        rideId:
+          type: string
+        heldBy:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+        version:
+          type: string
+          example: "0.1.0"
+        timestamp:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        detail:
+          type: string
+        rideId:
+          type: string
+          nullable: true

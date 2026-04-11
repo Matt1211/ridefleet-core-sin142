@@ -1,0 +1,21 @@
+{
+  "annotations": { "list": [] },
+  "description": "Estado dos circuit breakers por serviço parceiro (a ser preenchido pelos grupos)",
+  "editable": true,
+  "panels": [
+    {
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "content": "## Circuit Breakers\n\nEste dashboard será preenchido quando os grupos expuserem métricas de circuit breaker.\n\nMétrica esperada: `ridefleet_circuit_breaker_state{service=\"group-X\"}` com valores:\n- `0` = CLOSED (normal)\n- `1` = OPEN (isolado)\n- `2` = HALF_OPEN (teste)\n\nConsulte `docs/onboarding.md` para o formato esperado.", "mode": "markdown" },
+      "title": "",
+      "type": "text"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["ridefleet", "circuit-breaker"],
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "RideFleet — Circuit Breakers",
+  "uid": "ridefleet-circuit-breakers",
+  "version": 1
+}

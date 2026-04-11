@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: "ridefleet"
+    env: "development"
+
+scrape_configs:
+
+  - job_name: "ridefleet-core"
+    static_configs:
+      - targets: ["core:8080"]
+    metrics_path: /metrics
+
+  # Adicionar um job por grupo quando seus serviços estiverem disponíveis
+  # - job_name: "group-a"
+  #   static_configs:
+  #     - targets: ["group-a:8080"]
+  #   metrics_path: /metrics
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,22 @@
+{
+  "annotations": { "list": [] },
+  "description": "Métricas de locks distribuídos do RideFleet Core",
+  "editable": true,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "default" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Locks Ativos ao Longo do Tempo",
+      "type": "timeseries",
+      "targets": [{ "expr": "ridefleet_locks_active", "legendFormat": "locks ativos" }]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["ridefleet", "locks"],
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "RideFleet — Locks Distribuídos",
+  "uid": "ridefleet-locks",
+  "version": 1
+}

@@ -1,0 +1,37 @@
+name: Deploy Observability Stack
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'observability/**'
+
+jobs:
+  validate-dashboards:
+    name: Validar dashboards Grafana (JSON)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar dashboards Grafana
+        run: |
+          for dashboard in observability/grafana/dashboards/*.json; do
+            python3 -c "import json; json.load(open('$dashboard'))" \
+              && echo "✅ $dashboard OK" \
+              || (echo "❌ $dashboard inválido" && exit 1)
+          done
+
+      - name: Validar provisioning YAML
+        run: |
+          python3 -c "
+          import yaml, glob, sys
+          files = glob.glob('observability/grafana/provisioning/**/*.yml', recursive=True)
+          files += glob.glob('observability/prometheus/*.yml')
+          for f in files:
+              try:
+                  yaml.safe_load(open(f))
+                  print(f'✅ {f} OK')
+              except Exception as e:
+                  print(f'❌ {f}: {e}')
+                  sys.exit(1)
+          "

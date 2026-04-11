@@ -1,0 +1,30 @@
+{
+  "annotations": { "list": [] },
+  "description": "Transições de estado da saga de corridas",
+  "editable": true,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "default" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Corridas em Estado Ativo",
+      "type": "timeseries",
+      "targets": [{ "expr": "ridefleet_saga_active_rides", "legendFormat": "corridas ativas" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "default" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "title": "Total de Corridas",
+      "type": "timeseries",
+      "targets": [{ "expr": "ridefleet_rides_total", "legendFormat": "total criadas" }]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["ridefleet", "saga"],
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "RideFleet — Saga Transitions",
+  "uid": "ridefleet-saga",
+  "version": 1
+}

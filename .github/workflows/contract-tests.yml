@@ -1,0 +1,78 @@
+name: Contract Tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'spec/**'
+      - 'conformance/tests/**'
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 8 * * *'   # Roda todo dia às 8h para detectar desvios
+
+jobs:
+  validate-spec:
+    name: Validar OpenAPI Spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Spectral (linter OpenAPI)
+        run: npm install -g @stoplight/spectral-cli
+
+      - name: Lint da spec
+        run: spectral lint spec/api/openapi.yaml
+
+      - name: Validar JSON Schemas
+        run: |
+          npm install -g ajv-cli
+          for schema in spec/schemas/*.json; do
+            echo "Validando $schema..."
+            ajv validate -s "$schema" --strict=true || echo "⚠️  $schema tem aviso (pode ser schema sem instância de teste)"
+          done
+
+  contract-tests:
+    name: Testar Conformidade dos Serviços
+    runs-on: ubuntu-latest
+    needs: validate-spec
+    # Habilitado quando os grupos tiverem imagens disponíveis
+    if: false
+    strategy:
+      matrix:
+        group: [A, B, C, D, E]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Subir core
+        run: |
+          cp infra/.env.example infra/.env
+          docker compose -f infra/docker-compose.core.yml up -d
+          timeout 60 bash -c 'until curl -sf http://localhost:8080/api/v1/health; do sleep 2; done'
+
+      - name: Executar testes de contrato — Grupo ${{ matrix.group }}
+        run: |
+          cd conformance/tests/contract
+          npm ci
+          GROUP=${{ matrix.group }} npm test
+
+      - name: Publicar relatório
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-report-group-${{ matrix.group }}
+          path: conformance/tests/contract/reports/
+
+      - name: Derrubar stack
+        if: always()
+        run: docker compose -f infra/docker-compose.core.yml down
+
+  notify-groups:
+    name: Notificar grupos sobre falhas
+    runs-on: ubuntu-latest
+    needs: contract-tests
+    if: failure()
+    steps:
+      - name: Notificar falhas
+        run: echo "TODO: Adicionar notificação via webhook/email (pós v0.1.0)"

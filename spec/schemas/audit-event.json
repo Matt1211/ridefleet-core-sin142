@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ridefleet.core/schemas/audit-event.json",
+  "title": "AuditEvent",
+  "description": "Evento de auditoria com timestamp lógico para reconstrução da ordem causal",
+  "type": "object",
+  "required": ["eventType", "serviceId", "logicalTimestamp", "wallClockTime"],
+  "additionalProperties": false,
+  "properties": {
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "ride_created",
+        "proposal_submitted",
+        "lock_acquired",
+        "lock_released",
+        "lock_expired",
+        "state_transition",
+        "compensation_triggered",
+        "auction_closed"
+      ],
+      "description": "Tipo do evento"
+    },
+    "serviceId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ID do serviço que gerou o evento (ou 'core' para eventos internos)"
+    },
+    "logicalTimestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Relógio lógico de Lamport no momento do evento — use para ordenação causal"
+    },
+    "wallClockTime": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp wall-clock (informativo; não usar para ordenação causal)"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Dados específicos do evento (estrutura varia por eventType)"
+    }
+  }
+}

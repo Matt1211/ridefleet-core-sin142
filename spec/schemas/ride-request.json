@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ridefleet.core/schemas/ride-request.json",
+  "title": "RideRequest",
+  "description": "Payload para solicitar uma nova corrida ao core",
+  "type": "object",
+  "required": ["originServiceId", "passengerId", "origin", "destination", "logicalTimestamp"],
+  "additionalProperties": false,
+  "properties": {
+    "originServiceId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ID do serviço que originou a solicitação (ex: 'group-a')"
+    },
+    "passengerId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identificador único do passageiro"
+    },
+    "origin": {
+      "$ref": "#/$defs/Location"
+    },
+    "destination": {
+      "$ref": "#/$defs/Location"
+    },
+    "logicalTimestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Relógio lógico de Lamport do serviço de origem no momento da solicitação"
+    }
+  },
+  "$defs": {
+    "Location": {
+      "type": "object",
+      "required": ["lat", "lng"],
+      "additionalProperties": false,
+      "properties": {
+        "lat": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lng": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "address": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,68 @@
+name: Lint and Validate
+
+on:
+  push:
+    branches: [main, develop, 'feat/**', 'fix/**', 'spec/**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint-spec:
+    name: Lint OpenAPI Spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar Spectral
+        run: npm install -g @stoplight/spectral-cli
+
+      - name: Lint spec/api/openapi.yaml
+        run: spectral lint spec/api/openapi.yaml
+
+  lint-python:
+    name: Lint Python (core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências de lint
+        run: pip install ruff
+
+      - name: Lint core/
+        run: ruff check core/ conformance/
+
+  docker-build:
+    name: Build e Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build do core
+        run: docker compose -f infra/docker-compose.core.yml build core
+
+      - name: Subir stack
+        run: |
+          cp infra/.env.example infra/.env
+          docker compose -f infra/docker-compose.core.yml up -d
+
+      - name: Aguardar core ficar saudável
+        run: timeout 60 bash -c 'until curl -sf http://localhost:8080/api/v1/health; do sleep 2; done'
+
+      - name: Smoke test — endpoints básicos
+        run: |
+          curl -sf http://localhost:8080/api/v1/health
+          curl -sf http://localhost:8080/metrics
+
+      - name: Derrubar stack
+        if: always()
+        run: docker compose -f infra/docker-compose.core.yml down

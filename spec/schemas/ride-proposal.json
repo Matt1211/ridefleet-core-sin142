@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ridefleet.core/schemas/ride-proposal.json",
+  "title": "RideProposal",
+  "description": "Proposta de aceite de corrida enviada por um serviço participante do leilão",
+  "type": "object",
+  "required": ["serviceId", "estimatedEta", "estimatedPrice", "logicalTimestamp"],
+  "additionalProperties": false,
+  "properties": {
+    "serviceId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ID do serviço que está submetendo a proposta"
+    },
+    "estimatedEta": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Tempo estimado de chegada em segundos"
+    },
+    "estimatedPrice": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Preço estimado da corrida em BRL"
+    },
+    "logicalTimestamp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Relógio lógico de Lamport do serviço proponente"
+    }
+  }
+}

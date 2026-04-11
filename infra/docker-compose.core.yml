@@ -1,0 +1,85 @@
+version: "3.9"
+
+# Docker Compose do core — sobe o core + observabilidade.
+# Uso: docker compose -f infra/docker-compose.core.yml up -d
+#
+# Broker: Redis (provisional, pendente ADR-002).
+# Após definição do broker em ADR-002, atualizar este arquivo.
+
+services:
+
+  core:
+    build:
+      context: ..
+      dockerfile: core/Dockerfile
+    image: ridefleet-core:latest
+    container_name: ridefleet-core
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - CORE_ENV=${CORE_ENV:-development}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - ridefleet-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: ridefleet-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ridefleet-net
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: ridefleet-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    depends_on:
+      - core
+    networks:
+      - ridefleet-net
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: ridefleet-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-ridefleet}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - ridefleet-net
+
+networks:
+  ridefleet-net:
+    driver: bridge
+
+volumes:
+  grafana-data:
