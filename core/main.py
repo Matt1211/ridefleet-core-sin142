@@ -27,12 +27,14 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
-# Adiciona o diretório conformance ao path para importar os módulos internos
+# Adiciona os diretórios src/ ao path diretamente.
 # ---------------------------------------------------------------------------
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "conformance"))
+_conformance = os.path.join(os.path.dirname(__file__), "..", "conformance")
+sys.path.insert(0, os.path.join(_conformance, "lock-manager", "src"))
+sys.path.insert(0, os.path.join(_conformance, "saga-coordinator", "src"))
 
-from lock_manager.src.lock_manager import LockManager
-from saga_coordinator.src.saga_coordinator import SagaCoordinator, SagaState
+from lock_manager import LockManager
+from saga_coordinator import SagaCoordinator, SagaState
 
 # ---------------------------------------------------------------------------
 # App
