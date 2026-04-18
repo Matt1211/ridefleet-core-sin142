@@ -773,7 +773,7 @@ components:
 
     RideRequest:
       type: object
-      required: [originServiceId, passengerId, origin, destination, logicalTimestamp]
+      required: [originServiceId, passengerId, passengerName, origin, destination, logicalTimestamp]
       properties:
         originServiceId:
           type: string
@@ -783,6 +783,11 @@ components:
           type: string
           description: Identificador único do passageiro
           example: "passenger-42"
+        passengerName:
+          type: string
+          minLength: 1
+          description: Nome do passageiro
+          example: "João da Silva"
         origin:
           $ref: '#/components/schemas/Location'
         destination:
@@ -1063,6 +1068,10 @@ components:
           type: string
           description: Identificador do passageiro
           example: "passenger-42"
+        passengerName:
+          type: string
+          description: Nome do passageiro
+          example: "João da Silva"
         logicalTimestamp:
           type: integer
           minimum: 0
@@ -1193,7 +1202,7 @@ components:
         Payload enviado pelo core ao grupo vencedor do leilão via
         `POST {serviceUrl}/rides/{rideUuid}/assigned`.
         O grupo deve iniciar o fluxo de aceite ao receber este callback.
-      required: [rideUuid, origin, destination, passengerId, originServiceId, logicalTimestamp]
+      required: [rideUuid, origin, destination, passengerId, passengerName, originServiceId, logicalTimestamp]
       properties:
         rideUuid:
           type: string
@@ -1208,6 +1217,10 @@ components:
           type: string
           description: Identificador do passageiro
           example: "passenger-42"
+        passengerName:
+          type: string
+          description: Nome do passageiro
+          example: "João da Silva"
         originServiceId:
           type: string
           description: Grupo que originou a corrida (o "cliente" desta delegação)
