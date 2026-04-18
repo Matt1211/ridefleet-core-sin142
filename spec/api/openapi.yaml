@@ -1,11 +1,11 @@
 openapi: "3.1.0"
 info:
   title: RideFleet Core API
-  version: "0.1.0"
+  version: "0.4.0"
   description: >
     Contrato de integração entre os serviços do ecossistema RideFleet.
     Toda comunicação entre grupos DEVE passar pelo core.
-    SIN 142 — Sistemas Distribuídos — UFV 2026/1
+    SIN 142 - Sistemas Distribuídos - UFV 2026/1
 
 servers:
   - url: http://core:8080/api/v1
@@ -13,13 +13,102 @@ servers:
   - url: http://localhost:8080/api/v1
     description: Core local (desenvolvimento)
 
+# Segurança aplicada globalmente a todos os endpoints.
+# Endpoints públicos (/health e /groups/register) sobrescrevem com security: []
+security:
+  - ApiKeyAuth: []
+
 paths:
+
+  /groups/register:
+    post:
+      summary: Registrar grupo e obter API Key de acesso
+      operationId: registerGroup
+      tags: [auth]
+      security: []
+      description: >
+        Registra um novo grupo no ecossistema RideFleet e retorna a API Key
+        que deverá ser enviada em todas as requisições subsequentes via header
+        `X-API-Key`. Cada `groupId` só pode ser registrado uma vez.
+        Este endpoint é público - não requer autenticação.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupRegistration'
+      responses:
+        "201":
+          description: Grupo registrado - API Key gerada com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupCredentials'
+        "409":
+          description: groupId já registrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "422":
+          description: Payload inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      summary: Listar grupos registrados
+      operationId: listGroups
+      tags: [auth]
+      security:
+        - ApiKeyAuth: []
+      description: >
+        Retorna todos os grupos atualmente registrados no ecossistema RideFleet.
+        A API Key de cada grupo **não é exposta** - apenas as informações públicas
+        necessárias para roteamento e observabilidade.
+
+
+        Útil para dashboards de observabilidade (quais grupos estão online?),
+        depuração de integração (a `serviceUrl` está correta?) e para o professor
+        verificar a conformidade do registro durante a avaliação.
+      responses:
+        "200":
+          description: Lista de grupos registrados
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GroupInfo'
+        "401":
+          description: API Key ausente ou inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /rides:
     post:
       summary: Solicitar nova corrida (ou delegação)
       operationId: createRide
       tags: [rides]
+      security:
+        - ApiKeyAuth: []
+      description: >
+        Ponto de entrada para o ciclo de vida de uma corrida. O core adquire imediatamente
+        um lock distribuído interno em nome do `originServiceId`, registra a corrida no estado
+        `request` e dispara o leilão em paralelo - notificando via callback todos os grupos
+        registrados (exceto o solicitante) para coleta de propostas.
+
+
+        O campo `auctionTimeoutSeconds` controla por quanto tempo o core aguarda respostas.
+        Ao encerrar o leilão, o core seleciona o vencedor, transita a corrida para `match`
+        e **transfere o lock distribuído automaticamente para o grupo vencedor** - o vencedor
+        não precisa chamar `POST /locks/{rideUuid}` explicitamente. A validade inicial do
+        lock transferido é de 60 segundos; o grupo vencedor pode renovar chamando
+        `POST /locks/{rideUuid}` com seu `serviceId` antes do prazo expirar.
+        O solicitante pode acompanhar o progresso via `GET /rides/{rideUuid}/status`.
       requestBody:
         required: true
         content:
@@ -33,8 +122,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RideAccepted'
+        "401":
+          description: API Key ausente ou inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "409":
-          description: Conflito — lock não adquirido (corrida já em processamento)
+          description: Conflito - lock não adquirido (corrida já em processamento)
           content:
             application/json:
               schema:
@@ -46,54 +141,136 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /rides/{rideId}/proposals:
-    post:
-      summary: Enviar proposta de aceite (leilão)
-      operationId: submitProposal
+    get:
+      summary: Listar corridas com filtros opcionais
+      operationId: listRides
       tags: [rides]
+      security:
+        - ApiKeyAuth: []
+      description: >
+        Retorna a lista de corridas registradas no core, com suporte a filtros por
+        grupo de origem, grupo atribuído e estado da saga. Útil para dashboards
+        de front-end, recuperação de estado após reinício de serviço e observabilidade.
+
+
+        A resposta é paginada: use `limit` e `offset` para navegar em conjuntos
+        grandes. A ordenação é cronológica decrescente (corridas mais recentes primeiro).
       parameters:
-        - name: rideId
+        - name: originServiceId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Filtra corridas cujo grupo solicitante seja exatamente este `serviceId`.
+            Útil para um grupo listar apenas as corridas que ele originou.
+          example: "group-a"
+        - name: assignedServiceId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Filtra corridas atribuídas a este `serviceId` após o leilão.
+            Útil para o grupo vencedor listar as corridas sob sua responsabilidade.
+          example: "group-b"
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [request, match, confirm, in_transit, complete, compensating, cancelled]
+          description: Filtra corridas em um determinado estado da saga.
+          example: "in_transit"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Número máximo de corridas retornadas por página.
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Índice do primeiro resultado a retornar (zero-indexed).
+      responses:
+        "200":
+          description: Lista de corridas (possivelmente vazia)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RideList'
+        "401":
+          description: API Key ausente ou inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /rides/{rideUuid}/proposals:
+    get:
+      summary: Consultar resultado do leilão (propostas coletadas pelo core)
+      operationId: getRideProposals
+      tags: [rides]
+      security:
+        - ApiKeyAuth: []
+      description: >
+        Retorna todas as propostas coletadas pelo core durante o leilão desta corrida,
+        incluindo os grupos convidados, suas respostas (ou ausência delas), o tempo de
+        resposta de cada um e o grupo vencedor selecionado pelo core.
+        Disponível durante e após o encerramento do leilão.
+      parameters:
+        - name: rideUuid
           in: path
           required: true
           schema:
             type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RideProposal'
+            format: uuid
       responses:
         "200":
-          description: Proposta registrada
+          description: Resultado do leilão
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProposalAccepted'
+                $ref: '#/components/schemas/AuctionResult'
+        "401":
+          description: API Key ausente ou inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Corrida não encontrada
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "409":
-          description: Corrida não está no estado `request`
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
-  /rides/{rideId}/status:
+  /rides/{rideUuid}/status:
     get:
       summary: Consultar estado atual da corrida
       operationId: getRideStatus
       tags: [rides]
+      security:
+        - ApiKeyAuth: []
+      description: >
+        Retorna o estado corrente da corrida na máquina de estados da saga, incluindo
+        o serviço atribuído (`assignedServiceId`) após o encerramento do leilão e o
+        relógio lógico de Lamport do core no momento da última transição.
+        Use este endpoint para polling de progresso quando não houver notificação ativa.
       parameters:
-        - name: rideId
+        - name: rideUuid
           in: path
           required: true
           schema:
             type: string
+            format: uuid
       responses:
         "200":
           description: Estado atual da corrida
@@ -101,6 +278,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RideStatus'
+        "401":
+          description: API Key ausente ou inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Corrida não encontrada
           content:
@@ -112,12 +295,51 @@ paths:
       summary: Atualizar estado da corrida (transição de saga)
       operationId: updateRideStatus
       tags: [rides]
+      security:
+        - ApiKeyAuth: []
+      description: >
+        Aplica uma transição de estado na máquina de estados da saga. O core valida:
+
+        1. **Transição permitida** - a transição deve seguir o grafo definido na saga
+           (`request → match → confirm → in_transit → complete`, com desvios para
+           `compensating → cancelled`).
+
+        2. **Titularidade do lock** - para as transições `confirm`, `in_transit` e
+           `complete`, o `serviceId` informado deve ser o detentor ativo do lock
+           distribuído sobre esta corrida.
+
+        3. **Ordenação causal** - o `logicalTimestamp` deve ser estritamente maior que
+           o último registrado para a corrida (proteção contra eventos atrasados e
+           duplicatas).
+
+
+        A operação é **idempotente**: submeter a mesma transição duas vezes (mesmo
+        `serviceId` + `logicalTimestamp`) retorna `200` sem alterar o estado. Em estados
+        terminais (`complete`, `cancelled`) o core libera o lock automaticamente.
+
+
+        **Compensação e re-delegação automática:** quando a corrida transita para
+        `compensating` (por falha do grupo atribuído ou por expiração do lock), o core:
+
+        1. Libera o lock do grupo falho e registra `lock_released` no audit log.
+
+        2. Registra o evento `compensation_triggered` com o motivo da falha.
+
+        3. Re-executa o leilão automaticamente, excluindo o grupo que falhou.
+
+        4. Se nenhum outro grupo responder com proposta válida, transita para `cancelled`.
+
+
+        O grupo solicitante original acompanha esse processo via polling
+        `GET /rides/{rideUuid}/status` - o estado voltará a `match` quando um novo
+        vencedor for selecionado, ou irá para `cancelled` se não houver alternativa.
       parameters:
-        - name: rideId
+        - name: rideUuid
           in: path
           required: true
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         content:
@@ -131,6 +353,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RideStatus'
+        "401":
+          description: API Key ausente ou inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Corrida não encontrada
           content:
@@ -150,17 +378,30 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /rides/{rideId}/audit:
+  /rides/{rideUuid}/audit:
     get:
       summary: Log causal completo da corrida (relógios lógicos)
       operationId: getRideAuditLog
       tags: [rides]
+      security:
+        - ApiKeyAuth: []
+      description: >
+        Retorna o histórico completo de eventos da corrida, ordenados pelo relógio lógico
+        de Lamport do core. A ordenação por `logicalTimestamp` permite reconstruir a
+        relação *happened-before* entre eventos que ocorreram em diferentes serviços,
+        mesmo sem sincronização de relógio de parede.
+
+
+        Cada evento registra o `serviceId` responsável, o instante wall-clock (informativo)
+        e um `payload` com dados específicos do evento. Use este endpoint para auditoria,
+        depuração de corridas com falha e verificação de conformidade do saga pattern.
       parameters:
-        - name: rideId
+        - name: rideUuid
           in: path
           required: true
           schema:
             type: string
+            format: uuid
       responses:
         "200":
           description: Log causal da corrida
@@ -168,6 +409,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuditLog'
+        "401":
+          description: API Key ausente ou inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Corrida não encontrada
           content:
@@ -175,17 +422,49 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  /locks/{rideId}:
+  /locks/{rideUuid}:
     post:
       summary: Adquirir lock distribuído sobre a corrida
       operationId: acquireLock
       tags: [locks]
+      security:
+        - ApiKeyAuth: []
+      description: >
+        Adquire ou renova a trava distribuída sobre uma corrida em nome do `serviceId`
+        informado. O lock garante exclusividade: apenas o detentor ativo pode transitar
+        a corrida para `confirm`, `in_transit` ou `complete`.
+
+
+        **Semântica de renovação:** se o `serviceId` informado já é o detentor ativo
+        do lock, a chamada **não retorna 409** - ela age como renovação, reiniciando o
+        TTL para o novo valor de `ttlSeconds`. O campo `expiresAt` na resposta reflete
+        o novo prazo. Use este comportamento para estender o prazo quando uma etapa
+        (ex: motorista a caminho) levar mais tempo que o TTL inicial.
+
+
+        **Nota sobre o fluxo de leilão:** o grupo vencedor do leilão já recebe o lock
+        pré-transferido pelo core via callback `POST /rides/{rideUuid}/assigned` -
+        não é necessário chamar este endpoint para o aceite inicial. Use este endpoint
+        para **renovar** o lock antes de `lockExpiresAt` quando precisar de mais tempo
+        em uma transição, ou para **re-adquirir** após uma expiração.
+
+
+        O core implementa semântica de **lease com TTL**: se o detentor não progredir
+        nem renovar dentro do prazo (`ttlSeconds`), o lock expira automaticamente. O
+        monitor de expiração do core verifica locks a cada **5 segundos**; grupos
+        devem renovar com margem de segurança (ex: a cada `ttlSeconds - 10s`).
+
+
+        Se um serviço **diferente** já detém o lock ativo, o core retorna `409` com os
+        dados do detentor atual (`heldBy`, `expiresAt`) para que o solicitante possa
+        decidir quanto tempo aguardar antes de tentar novamente.
       parameters:
-        - name: rideId
+        - name: rideUuid
           in: path
           required: true
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         content:
@@ -199,36 +478,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LockResponse'
+        "401":
+          description: API Key ausente ou inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "409":
           description: Lock já detido por outro serviço
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/LockConflict'
+        "422":
+          description: Payload inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       summary: Liberar lock distribuído
       operationId: releaseLock
       tags: [locks]
+      security:
+        - ApiKeyAuth: []
+      description: >
+        Libera explicitamente o lock distribuído sobre a corrida. Apenas o serviço que
+        detém o lock ativo (`serviceId` no body deve corresponder ao detentor registrado)
+        pode realizar a liberação.
+
+
+        A liberação explícita é necessária quando o grupo decide abandonar a corrida
+        antes de atingir um estado terminal. Em estados terminais (`complete`,
+        `cancelled`), o core libera o lock automaticamente via `PATCH /rides/{rideUuid}/status`,
+        tornando esta chamada desnecessária nesses casos.
       parameters:
-        - name: rideId
+        - name: rideUuid
           in: path
           required: true
           schema:
             type: string
+            format: uuid
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [serviceId]
-              properties:
-                serviceId:
-                  type: string
+              $ref: '#/components/schemas/LockReleaseRequest'
       responses:
         "204":
           description: Lock liberado com sucesso
+        "401":
+          description: API Key ausente ou inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "403":
           description: Serviço não detém o lock
           content:
@@ -247,6 +553,12 @@ paths:
       summary: Health check do core
       operationId: healthCheck
       tags: [health]
+      security: []
+      description: >
+        Verifica se o core está operacional. Retorna a versão do serviço e o
+        instante atual (wall-clock UTC). Este endpoint é público - não requer
+        autenticação - e deve ser usado por liveness/readiness probes do
+        Docker Compose ou orquestrador.
       responses:
         "200":
           description: Core operacional
@@ -255,8 +567,210 @@ paths:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
 
+  /metrics:
+    get:
+      summary: Métricas Prometheus do core
+      operationId: getMetrics
+      tags: [health]
+      security: []
+      description: >
+        Expõe métricas no formato texto Prometheus (OpenMetrics). Este
+        endpoint é público - não requer autenticação - e deve ser coletado
+        pelo Prometheus via scrape.
+
+
+        Métricas relevantes expostas pelo core incluem contadores de corridas
+        por estado, latência de leilões, número de locks ativos e relógio
+        lógico corrente. Os grupos parceiros devem expor suas próprias
+        métricas em seu serviço no mesmo padrão, incluindo
+        `ridefleet_circuit_breaker_state{service, partner}`.
+      responses:
+        "200":
+          description: Métricas no formato texto Prometheus
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP ridefleet_rides_total Total de corridas criadas
+                  # TYPE ridefleet_rides_total counter
+                  ridefleet_rides_total 42
+                  # HELP ridefleet_logical_clock_current Valor atual do relógio lógico de Lamport
+                  # TYPE ridefleet_logical_clock_current gauge
+                  ridefleet_logical_clock_current 317
+                  # HELP ridefleet_core_circuit_breaker_state Estado do CB do core por grupo alvo (0=CLOSED,1=OPEN,2=HALF_OPEN)
+                  # TYPE ridefleet_core_circuit_breaker_state gauge
+                  ridefleet_core_circuit_breaker_state{target_group="group-b"} 0
+                  ridefleet_core_circuit_breaker_state{target_group="group-c"} 1
+
+# ---------------------------------------------------------------------------
+# Webhooks - endpoints que os grupos DEVEM implementar em seus serviços.
+# O core chamará esses endpoints durante o fluxo de leilão e atribuição.
+# ---------------------------------------------------------------------------
+webhooks:
+
+  "/rides/incoming":
+    post:
+      summary: "[GRUPOS DEVEM IMPLEMENTAR] Notificação de nova corrida para leilão"
+      operationId: receiveAuctionNotification
+      tags: [webhooks]
+      description: >
+        O core chama `POST {serviceUrl}/rides/incoming` em todos os grupos registrados
+        (exceto o solicitante) quando uma nova corrida entra em leilão.
+        O grupo deve responder **de forma síncrona** com sua proposta (ETA + preço)
+        dentro do prazo `auctionDeadline`. Resposta após o prazo é ignorada.
+
+
+        **Critério de seleção do vencedor (executado pelo core):**
+
+        1. Menor `estimatedEta`
+
+        2. Em empate: menor `estimatedPrice`
+
+        3. Em empate: menor `logicalTimestamp` (chegou causalmente primeiro)
+
+        4. Em empate total: ordem lexicográfica de `groupId` (determinístico)
+
+
+        Grupos que retornarem `204`, não responderem ou responderem com erro
+        são excluídos do leilão sem penalidade.
+
+
+        **Circuit breaker do core:** o core mantém um circuit breaker por grupo para
+        as chamadas de webhook. Se um grupo falhar repetidamente (timeout ou erro HTTP
+        ≥ 500) além do threshold configurado, o circuito abre e o core **para de convidar
+        esse grupo** para novos leilões durante o período de recuperação. O estado do
+        circuito de cada grupo é exposto em `GET /metrics` via
+        `ridefleet_core_circuit_breaker_state{target_group}`. O circuito fecha
+        automaticamente após o timer de recuperação + uma chamada de teste bem-sucedida.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RideAuctionNotification'
+      responses:
+        "200":
+          description: Proposta do grupo (participa do leilão)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProposalResponse'
+        "204":
+          description: Grupo passa o leilão (sem proposta - não será convidado para este leilão)
+
+  "/rides/{rideUuid}/assigned":
+    post:
+      summary: "[GRUPOS DEVEM IMPLEMENTAR] Notificação de corrida atribuída ao grupo vencedor"
+      operationId: receiveRideAssignment
+      tags: [webhooks]
+      description: >
+        O core chama `POST {serviceUrl}/rides/{rideUuid}/assigned` **exclusivamente no grupo
+        vencedor** após encerrar o leilão e registrar a transição para o estado `match`.
+
+
+        O lock distribuído sobre a corrida é **transferido automaticamente para o grupo
+        vencedor** junto com este callback - o campo `lockExpiresAt` indica o prazo de
+        validade. O grupo deve confirmar o recebimento com `200` e, dentro do prazo do lock,
+        transitar a corrida para `confirm` via `PATCH /rides/{rideUuid}/status`.
+
+
+        Se o grupo precisar de mais tempo, deve renovar o lock chamando
+        `POST /locks/{rideUuid}` antes de `lockExpiresAt`. Se não confirmar dentro do prazo,
+        o lock expira, o core detecta a falha, aciona a compensação e re-executa o leilão
+        excluindo este grupo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RideAssignment'
+      responses:
+        "200":
+          description: Grupo confirmou o recebimento da atribuição
+
 components:
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        API Key obtida via `POST /groups/register`. Deve ser enviada em todas
+        as requisições (exceto `/health` e `/groups/register`) no header
+        `X-API-Key: <sua-chave>`.
+
   schemas:
+
+    GroupRegistration:
+      type: object
+      required: [groupId, groupName, serviceUrl]
+      properties:
+        groupId:
+          type: string
+          minLength: 1
+          pattern: '^[a-z0-9-]+$'
+          description: >
+            Identificador único do grupo. Imutável após registro.
+            Use apenas letras minúsculas, dígitos e hífens.
+          example: "group-a"
+        groupName:
+          type: string
+          minLength: 1
+          description: Nome legível do grupo
+          example: "Grupo A - Sistemas Distribuídos"
+        serviceUrl:
+          type: string
+          format: uri
+          description: >
+            URL base do serviço do grupo, acessível na rede interna do Docker Compose.
+            O core usará esta URL para enviar notificações de leilão (`POST {serviceUrl}/rides/incoming`)
+            e resultado (`POST {serviceUrl}/rides/{rideUuid}/assigned`).
+            Deve terminar sem barra (trailing slash).
+          example: "http://group-a:8081"
+        contactEmail:
+          type: string
+          format: email
+          description: E-mail de contato (opcional)
+          example: "grupo-a@ufv.br"
+
+    GroupCredentials:
+      type: object
+      properties:
+        groupId:
+          type: string
+          example: "group-a"
+        apiKey:
+          type: string
+          description: >
+            API Key a ser enviada no header `X-API-Key` em todas as requisições
+            autenticadas. Guarde com segurança - não será exibida novamente.
+          example: "rfk_a1b2c3d4e5f67890abcdef"
+        registeredAt:
+          type: string
+          format: date-time
+
+    GroupInfo:
+      type: object
+      description: >
+        Informações públicas de um grupo registrado. A API Key nunca é exposta
+        neste schema.
+      properties:
+        groupId:
+          type: string
+          example: "group-a"
+        groupName:
+          type: string
+          example: "Grupo A - Sistemas Distribuídos"
+        serviceUrl:
+          type: string
+          format: uri
+          example: "http://group-a:8081"
+        registeredAt:
+          type: string
+          format: date-time
+
     RideRequest:
       type: object
       required: [originServiceId, passengerId, origin, destination, logicalTimestamp]
@@ -267,6 +781,7 @@ components:
           example: "group-a"
         passengerId:
           type: string
+          description: Identificador único do passageiro
           example: "passenger-42"
         origin:
           $ref: '#/components/schemas/Location'
@@ -274,40 +789,53 @@ components:
           $ref: '#/components/schemas/Location'
         logicalTimestamp:
           type: integer
+          minimum: 0
           description: Relógio lógico de Lamport do serviço de origem
           example: 17
-
-    RideProposal:
-      type: object
-      required: [serviceId, estimatedEta, estimatedPrice, logicalTimestamp]
-      properties:
-        serviceId:
-          type: string
-          example: "group-b"
-        estimatedEta:
+        auctionTimeoutSeconds:
           type: integer
-          description: ETA em segundos
-          example: 240
-        estimatedPrice:
-          type: number
-          example: 18.50
-        logicalTimestamp:
-          type: integer
-          example: 22
+          minimum: 5
+          maximum: 60
+          default: 10
+          description: >
+            Janela de tempo (em segundos) que o core aguarda propostas dos grupos parceiros.
+            Após esse período, o leilão é encerrado e o vencedor selecionado com as
+            propostas recebidas até então. Se omitido, usa o padrão do core (10s).
+          example: 10
 
     RideStatus:
       type: object
       properties:
-        rideId:
+        rideUuid:
           type: string
+          format: uuid
         state:
           type: string
           enum: [request, match, confirm, in_transit, complete, compensating, cancelled]
         assignedServiceId:
           type: string
           nullable: true
+          description: groupId do serviço atribuído após o leilão (null enquanto em 'request')
+          example: "group-b"
         logicalTimestamp:
           type: integer
+          description: Valor do relógio lógico de Lamport do core na última transição
+        lockHeldBy:
+          type: string
+          nullable: true
+          description: >
+            groupId do detentor ativo do lock. `null` se não há lock ativo
+            (corrida em estado terminal ou ainda não atribuída).
+          example: "group-b"
+        lockExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Prazo de expiração do lock ativo (wall-clock UTC). `null` se não há lock ativo.
+            Use este campo para saber quando renovar o lock sem depender do payload do
+            webhook `/assigned` - útil após reinício de serviço ou recuperação de estado.
+          example: "2026-04-18T14:01:11Z"
         updatedAt:
           type: string
           format: date-time
@@ -315,40 +843,50 @@ components:
     RideStatusUpdate:
       type: object
       required: [newState, serviceId, logicalTimestamp]
+      description: >
+        Payload para transição de estado da saga. Apenas estados controláveis por grupos
+        são aceitos: `confirm`, `in_transit`, `complete`, `compensating` e `cancelled`.
+        O estado `match` é definido exclusivamente pelo core ao fechar o leilão e **não
+        pode ser enviado por grupos** - a tentativa resultará em `422`.
+        O estado `request` é criado pelo core em `POST /rides`.
       properties:
         newState:
           type: string
-          enum: [match, confirm, in_transit, complete, compensating, cancelled]
+          enum: [confirm, in_transit, complete, compensating, cancelled]
+          description: >
+            Estados que grupos podem definir via PATCH:
+            `confirm` - vencedor aceita a corrida (requer lock);
+            `in_transit` - motorista pegou o passageiro (requer lock);
+            `complete` - corrida finalizada (requer lock; core libera lock automaticamente);
+            `compensating` - grupo sinaliza falha e inicia compensação;
+            `cancelled` - corrida cancelada (core libera lock automaticamente).
         serviceId:
           type: string
+          description: ID do serviço que está aplicando a transição
+          example: "group-b"
         logicalTimestamp:
           type: integer
+          minimum: 0
+          description: Relógio lógico de Lamport do serviço no momento da transição
+          example: 25
 
     RideAccepted:
       type: object
       properties:
-        rideId:
+        rideUuid:
           type: string
+          format: uuid
         logicalTimestamp:
           type: integer
         message:
           type: string
 
-    ProposalAccepted:
-      type: object
-      properties:
-        rideId:
-          type: string
-        proposalId:
-          type: string
-        logicalTimestamp:
-          type: integer
-
     AuditLog:
       type: object
       properties:
-        rideId:
+        rideUuid:
           type: string
+          format: uuid
         events:
           type: array
           items:
@@ -359,6 +897,15 @@ components:
       properties:
         eventType:
           type: string
+          enum:
+            - ride_created
+            - proposal_submitted
+            - lock_acquired
+            - lock_released
+            - lock_expired
+            - state_transition
+            - compensation_triggered
+            - auction_closed
           example: "ride_created"
         serviceId:
           type: string
@@ -376,13 +923,26 @@ components:
       properties:
         lat:
           type: number
+          minimum: -90
+          maximum: 90
           example: -20.7546
         lng:
           type: number
+          minimum: -180
+          maximum: 180
           example: -42.8825
-        address:
+        street:
           type: string
-          example: "Av. P.H. Rolfs, s/n, Viçosa - MG"
+          example: "Av. P.H. Rolfs"
+        number:
+          type: string
+          example: "S/N"
+        city:
+          type: string
+          example: "Viçosa"
+        state:
+          type: string
+          example: "MG"
 
     LockRequest:
       type: object
@@ -393,14 +953,26 @@ components:
           example: "group-a"
         ttlSeconds:
           type: integer
+          minimum: 1
+          maximum: 300
           default: 30
           example: 30
+
+    LockReleaseRequest:
+      type: object
+      required: [serviceId]
+      properties:
+        serviceId:
+          type: string
+          description: ID do serviço que detém o lock a ser liberado
+          example: "group-b"
 
     LockResponse:
       type: object
       properties:
-        rideId:
+        rideUuid:
           type: string
+          format: uuid
         serviceId:
           type: string
         expiresAt:
@@ -410,8 +982,9 @@ components:
     LockConflict:
       type: object
       properties:
-        rideId:
+        rideUuid:
           type: string
+          format: uuid
         heldBy:
           type: string
         expiresAt:
@@ -426,7 +999,7 @@ components:
           example: "ok"
         version:
           type: string
-          example: "0.1.0"
+          example: "0.2.0"
         timestamp:
           type: string
           format: date-time
@@ -438,6 +1011,217 @@ components:
           type: string
         detail:
           type: string
-        rideId:
+        rideUuid:
+          type: string
+          format: uuid
+          nullable: true
+
+    RideList:
+      type: object
+      description: Resultado paginado de corridas.
+      properties:
+        total:
+          type: integer
+          description: Total de corridas que satisfazem os filtros (independente da paginação)
+          example: 127
+        limit:
+          type: integer
+          example: 50
+        offset:
+          type: integer
+          example: 0
+        rides:
+          type: array
+          items:
+            $ref: '#/components/schemas/RideStatus'
+
+    # -----------------------------------------------------------------------
+    # Schemas do mecanismo de leilão
+    # -----------------------------------------------------------------------
+
+    RideAuctionNotification:
+      type: object
+      description: >
+        Payload enviado pelo core a cada grupo participante do leilão via
+        `POST {serviceUrl}/rides/incoming`.
+      required: [rideUuid, origin, destination, originServiceId, logicalTimestamp, auctionDeadline]
+      properties:
+        rideUuid:
+          type: string
+          format: uuid
+          description: Identificador único da corrida em leilão
+          example: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        origin:
+          $ref: '#/components/schemas/Location'
+        destination:
+          $ref: '#/components/schemas/Location'
+        originServiceId:
+          type: string
+          description: Grupo que originou a corrida (não participa do leilão como proponente)
+          example: "group-a"
+        passengerId:
+          type: string
+          description: Identificador do passageiro
+          example: "passenger-42"
+        logicalTimestamp:
+          type: integer
+          minimum: 0
+          description: Relógio lógico do core no momento do envio da notificação
+          example: 18
+        auctionDeadline:
+          type: string
+          format: date-time
+          description: >
+            Prazo absoluto (wall-clock UTC) até o qual o core aceita propostas.
+            Respostas recebidas após este instante são descartadas.
+            Calculado como `now + auctionTimeoutSeconds` no momento de criação da corrida.
+          example: "2026-04-18T14:00:10Z"
+
+    ProposalResponse:
+      type: object
+      description: >
+        Resposta síncrona do grupo ao receber a notificação de leilão.
+        Retornar `200` com este body significa participar do leilão.
+        Retornar `204` significa passar (sem proposta).
+      required: [estimatedEta, estimatedPrice, logicalTimestamp]
+      properties:
+        estimatedEta:
+          type: integer
+          minimum: 1
+          description: Tempo estimado de chegada do motorista em segundos
+          example: 180
+        estimatedPrice:
+          type: number
+          minimum: 0
+          description: Preço estimado da corrida em BRL
+          example: 15.50
+        logicalTimestamp:
+          type: integer
+          minimum: 0
+          description: Relógio lógico de Lamport do grupo proponente no momento da resposta
+          example: 23
+
+    ProposalSummary:
+      type: object
+      description: Resumo da proposta de um grupo, conforme registrada pelo core durante o leilão.
+      properties:
+        groupId:
+          type: string
+          description: Identificador do grupo convidado
+          example: "group-b"
+        serviceUrl:
+          type: string
+          format: uri
+          description: URL base do serviço do grupo no momento do leilão
+          example: "http://group-b:8082"
+        status:
+          type: string
+          enum: [accepted, passed, timeout, error]
+          description: >
+            Resultado da chamada do core ao grupo:
+            `accepted` - respondeu com proposta válida;
+            `passed` - retornou 204 (sem proposta);
+            `timeout` - não respondeu dentro do prazo;
+            `error` - retornou erro HTTP.
+          example: "accepted"
+        estimatedEta:
+          type: integer
+          nullable: true
+          description: ETA proposto (null se status != accepted)
+          example: 180
+        estimatedPrice:
+          type: number
+          nullable: true
+          description: Preço proposto (null se status != accepted)
+          example: 15.50
+        logicalTimestamp:
+          type: integer
+          nullable: true
+          description: Timestamp lógico do grupo proponente (null se status != accepted)
+          example: 23
+        responseTimeMs:
+          type: integer
+          nullable: true
+          description: Tempo de resposta do grupo em milissegundos (null se timeout ou error)
+          example: 312
+        respondedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Instante wall-clock em que o core recebeu a resposta (null se timeout ou error)
+
+    AuctionResult:
+      type: object
+      description: >
+        Resultado consolidado do leilão de uma corrida, retornado por
+        `GET /rides/{rideUuid}/proposals`.
+      properties:
+        rideUuid:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [open, closed, no_proposals]
+          description: >
+            `open` - leilão ainda em andamento (dentro do auctionTimeoutSeconds);
+            `closed` - leilão encerrado e vencedor selecionado;
+            `no_proposals` - leilão encerrado sem nenhuma proposta válida recebida.
+          example: "closed"
+        winner:
           type: string
           nullable: true
+          description: groupId do grupo vencedor (null se status != closed)
+          example: "group-b"
+        auctionOpenedAt:
+          type: string
+          format: date-time
+          description: Instante em que o leilão foi aberto (criação da corrida)
+        auctionClosedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Instante em que o leilão foi encerrado (null se ainda open)
+        proposals:
+          type: array
+          description: Lista de todos os grupos convidados e suas respostas
+          items:
+            $ref: '#/components/schemas/ProposalSummary'
+
+    RideAssignment:
+      type: object
+      description: >
+        Payload enviado pelo core ao grupo vencedor do leilão via
+        `POST {serviceUrl}/rides/{rideUuid}/assigned`.
+        O grupo deve iniciar o fluxo de aceite ao receber este callback.
+      required: [rideUuid, origin, destination, passengerId, originServiceId, logicalTimestamp]
+      properties:
+        rideUuid:
+          type: string
+          format: uuid
+          description: Identificador da corrida atribuída
+          example: "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        origin:
+          $ref: '#/components/schemas/Location'
+        destination:
+          $ref: '#/components/schemas/Location'
+        passengerId:
+          type: string
+          description: Identificador do passageiro
+          example: "passenger-42"
+        originServiceId:
+          type: string
+          description: Grupo que originou a corrida (o "cliente" desta delegação)
+          example: "group-a"
+        logicalTimestamp:
+          type: integer
+          minimum: 0
+          description: Relógio lógico do core no momento da atribuição
+          example: 31
+        lockExpiresAt:
+          type: string
+          format: date-time
+          description: >
+            Prazo absoluto (wall-clock UTC) até o qual o lock transferido ao grupo vencedor
+            é válido. O grupo deve transitar para `confirm` ou renovar o lock antes deste
+            instante para evitar que o core inicie a compensação automática.
+          example: "2026-04-18T14:01:11Z"
