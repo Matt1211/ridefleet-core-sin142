@@ -1,0 +1,24 @@
+info:
+  name: Registrar Grupo
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{CORE_HOST}}/api/v1/groups/register"
+  body:
+    type: json
+    data: |-
+      {
+        "groupId": "group-a",
+        "groupName": "Grupo A - Sistemas Distribuídos",
+        "serviceUrl": "http://group-a:8081",
+        "contactEmail": "grupo-a@ufv.br"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
