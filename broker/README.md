@@ -4,7 +4,25 @@ Configuração dos tópicos pub/sub do ecossistema RideFleet.
 
 ## Status
 
-**Broker em definição — aguardando ADR-002.**
+Broker implementado com RabbitMQ.
+
+O RabbitMQ é usado como broker pub/sub do Core RideFleet. O core publica eventos padronizados em uma exchange do tipo topic chamada `ridefleet.core.events`.
+
+## Exchange
+
+| Nome | Tipo | Descrição |
+|------|------|-----------|
+| `ridefleet.core.events` | topic | Exchange principal para eventos do core |
+
+## Tópicos
+
+| Tópico | Descrição |
+|--------|-----------|
+| `ride_created` | Nova corrida disponível para leilão |
+| `proposal_submitted` | Proposta registrada |
+| `ride_status_changed` | Transição de estado da saga |
+| `lock_event` | Eventos de aquisição/liberação de lock |
+| `compensation_triggered` | Compensação iniciada |
 
 Ver `docs/adr/ADR-002-broker-pubsub.md` para as opções em discussão (Redis Streams, RabbitMQ, Kafka).
 
