@@ -39,7 +39,7 @@ jobs:
         run: pip install ruff
 
       - name: Lint core/
-        run: ruff check core/ conformance/
+        run: ruff check app/
 
   docker-build:
     name: Build e Smoke Test

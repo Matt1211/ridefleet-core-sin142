@@ -11,7 +11,7 @@ services:
   core:
     build:
       context: ..
-      dockerfile: ../app/Dockerfile
+      dockerfile: app/Dockerfile
     image: ridefleet-core:latest
     container_name: ridefleet-core
     ports:
