@@ -1,0 +1,51 @@
+# Definição de tópicos pub/sub do RideFleet Core
+#
+# Status: provisional — tecnologia de broker pendente ADR-002.
+# Este arquivo documenta os tópicos logicamente. A implementação
+# concreta (exchange/queue no RabbitMQ, stream no Redis, topic no Kafka)
+# será adicionada após a decisão no ADR-002.
+
+topics:
+
+  ride_created:
+    description: >
+      Publicado pelo core quando uma nova corrida é criada via POST /rides.
+      Serviços parceiros devem subscrever para saber quando há corridas disponíveis para leilão.
+    publisher: core
+    subscribers: [all_groups]
+    payload_schema: spec/schemas/ride-request.json
+    retention: "1h"
+
+  proposal_submitted:
+    description: >
+      Publicado pelo core quando um serviço submete uma proposta via
+      POST /rides/{rideId}/proposals.
+    publisher: core
+    subscribers: [origin_service]
+    payload_schema: spec/schemas/ride-proposal.json
+    retention: "1h"
+
+  ride_status_changed:
+    description: >
+      Publicado pelo core a cada transição de estado (PATCH /rides/{rideId}/status).
+      Todos os grupos interessados recebem atualizações de estado.
+    publisher: core
+    subscribers: [all_groups]
+    payload_schema: spec/schemas/ride-status.json
+    retention: "24h"
+
+  lock_event:
+    description: >
+      Publicado pelo core em eventos de lock: aquisição, liberação e expiração.
+      Útil para observabilidade e detecção de contenção.
+    publisher: core
+    subscribers: [core_internal, observability]
+    retention: "1h"
+
+  compensation_triggered:
+    description: >
+      Publicado pelo core quando uma compensação é iniciada (transição para 'compensating').
+      Serviços envolvidos devem reverter suas ações locais.
+    publisher: core
+    subscribers: [assigned_service, origin_service]
+    retention: "24h"

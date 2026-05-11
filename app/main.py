@@ -6,11 +6,14 @@ from fastapi import APIRouter, FastAPI
 from app.controllers.auth_controller import router as auth_router
 from app.database import create_tables
 from app.exceptions import register_exception_handlers
+from app.rabbitmq import rabbitmq_broker
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await create_tables()
+    await rabbitmq_broker.connect()
     yield
+    await rabbitmq_broker.close()
 
 
 # Aplicação
