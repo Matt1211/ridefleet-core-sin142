@@ -11,16 +11,17 @@ services:
   core:
     build:
       context: ..
-      dockerfile: core/Dockerfile
+      dockerfile: ../app/Dockerfile
     image: ridefleet-core:latest
     container_name: ridefleet-core
     ports:
       - "8080:8080"
     environment:
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-ridefleet}:${RABBITMQ_PASSWORD:-ridefleet}@rabbitmq:5672/
+      - RABBITMQ_EXCHANGE=${RABBITMQ_EXCHANGE:-ridefleet.core.events}
       - CORE_ENV=${CORE_ENV:-development}
     depends_on:
-      redis:
+      rabbitmq:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/api/v1/health"]
@@ -31,16 +32,21 @@ services:
     networks:
       - ridefleet-net
 
-  redis:
-    image: redis:7-alpine
-    container_name: ridefleet-redis
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: ridefleet-rabbitmq
     ports:
-      - "6379:6379"
+      - "5672:5672"
+      - "15672:15672"
+      - "15692:15692"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-ridefleet}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-ridefleet}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
-      timeout: 3s
-      retries: 5
+      timeout: 5s
+      retries: 10
     networks:
       - ridefleet-net
 

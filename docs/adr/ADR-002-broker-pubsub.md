@@ -1,7 +1,7 @@
 # ADR-002 — Broker Pub/Sub
 
 **Data:** 2026-04-11
-**Status:** Em Discussão 🔄
+**Status:** Decidido
 **Autores:** Subgrupo Core — RideFleet
 **Aprovado por:** (pendente — escalar ao Prof. Damaso se não houver consenso até 18/04)
 
@@ -9,7 +9,7 @@
 
 O core precisa gerenciar tópicos pub/sub para rotear eventos entre os serviços (corrida criada, proposta submetida, status atualizado, etc.). A escolha do broker afeta todos os grupos, pois eles precisarão se conectar a ele para receber e publicar eventos.
 
-Por ora, o `docker-compose.core.yml` usa **Redis** como placeholder provisional. Esse arquivo deve ser atualizado após a decisão.
+Por ora, o `docker-compose.core.yml` usa **RabbitMQ** como placeholder provisional. Esse arquivo deve ser atualizado após a decisão.
 
 ## Opções em discussão
 
