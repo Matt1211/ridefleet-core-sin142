@@ -17,8 +17,9 @@ COMPOSE_DEV := docker compose -f infra/docker-compose.dev.yml
 ENV_FILE    := infra/.env.example
 ENV_TARGET  := infra/.env
 
-# DATABASE_URL aponta para localhost quando o servidor roda fora do Docker
-DATABASE_URL_DEV := postgresql+asyncpg://ridefleet:secret@localhost:5432/ridefleet_core
+# DATABASE_URL e RABBITMQ_URL apontam para localhost quando o servidor roda fora do Docker
+DATABASE_URL_DEV  := postgresql+asyncpg://ridefleet:secret@localhost:5432/ridefleet_core
+RABBITMQ_URL_DEV  := amqp://ridefleet:ridefleet@localhost:5672/
 
 .PHONY: help install dev db-up db-down test up down build logs health env
 
@@ -85,7 +86,7 @@ db-down:
 # dev — sobe o banco (se necessário) e inicia o servidor local com hot-reload
 # ------------------------------------------------------------------------------
 dev: db-up
-	DATABASE_URL=$(DATABASE_URL_DEV) $(UVICORN) app.main:app --reload --host 0.0.0.0 --port 8080
+	DATABASE_URL=$(DATABASE_URL_DEV) RABBITMQ_URL=$(RABBITMQ_URL_DEV) $(UVICORN) app.main:app --reload --host 0.0.0.0 --port 8080
 
 # ------------------------------------------------------------------------------
 # test — executa os testes com pytest (SQLite em memória, sem banco externo)
