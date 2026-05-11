@@ -2,9 +2,6 @@ version: "3.9"
 
 # Docker Compose do core — sobe o core + observabilidade.
 # Uso: docker compose -f infra/docker-compose.core.yml up -d
-#
-# Broker: Redis (provisional, pendente ADR-002).
-# Após definição do broker em ADR-002, atualizar este arquivo.
 
 services:
 
@@ -20,6 +17,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    volumes:
+      - ridefleet-db-data:/var/lib/postgresql/data
     networks:
       - ridefleet-net
 
@@ -107,4 +106,5 @@ networks:
     driver: bridge
 
 volumes:
+  ridefleet-db-data:
   grafana-data:

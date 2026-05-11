@@ -1,7 +1,7 @@
 version: "3.9"
 
 # Docker Compose para desenvolvimento local.
-# Sobe apenas o PostgreSQL, exposto em localhost:5432.
+# Sobe o PostgreSQL (localhost:5432) e o RabbitMQ (localhost:5672 / UI: 15672).
 # O servidor FastAPI roda fora do Docker (make dev / uvicorn --reload).
 #
 # Uso direto: docker compose -f infra/docker-compose.dev.yml up -d
@@ -25,6 +25,23 @@ services:
       retries: 10
     volumes:
       - ridefleet-db-data:/var/lib/postgresql/data
+    networks:
+      - ridefleet-dev
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: ridefleet-rabbitmq-dev
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ridefleet
+      RABBITMQ_DEFAULT_PASS: ridefleet
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - ridefleet-dev
 
