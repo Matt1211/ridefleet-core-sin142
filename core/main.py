@@ -25,7 +25,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Path
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
-
+from rabbitmq import rabbitmq_broker
 # ---------------------------------------------------------------------------
 # Adiciona os diretórios src/ ao path diretamente.
 # ---------------------------------------------------------------------------
@@ -45,6 +45,18 @@ app = FastAPI(
     version="0.1.0",
     description="Contrato de integração entre os serviços do ecossistema RideFleet.",
 )
+
+# ---------------------------------------------------------------------------
+# RabbitMQ 
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def startup_event():
+    await rabbitmq_broker.connect()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await rabbitmq_broker.close()
 
 # ---------------------------------------------------------------------------
 # Singletons (in-memory para v0.1.0)
@@ -142,7 +154,7 @@ def health_check():
 
 
 @app.post("/api/v1/rides", status_code=202)
-def create_ride(body: RideRequest):
+async def create_ride(body: RideRequest):
     ts = lamport_tick(body.logicalTimestamp)
     ride_id = str(uuid.uuid4())
 
@@ -166,7 +178,30 @@ def create_ride(body: RideRequest):
     append_audit(ride_id, "lock_acquired", body.originServiceId, ts, {
         "ttlSeconds": 60,
     })
+    
+    await rabbitmq_broker.publish_event(
+        event_type="ride_created",
+        ride_id=ride_id,
+        service_id=body.originServiceId,
+        logical_timestamp=ts,
+        payload={
+            "passengerId": body.passengerId,
+            "origin": body.origin.model_dump(),
+            "destination": body.destination.model_dump(),
+        },
+    )
 
+    await rabbitmq_broker.publish_event(
+        event_type="lock_event",
+        ride_id=ride_id,
+        service_id=body.originServiceId,
+        logical_timestamp=ts,
+        payload={
+            "action": "lock_acquired",
+            "ttlSeconds": 60,
+        },
+    )
+    
     return {
         "rideId": ride_id,
         "logicalTimestamp": ts,
@@ -175,7 +210,7 @@ def create_ride(body: RideRequest):
 
 
 @app.post("/api/v1/rides/{rideId}/proposals")
-def submit_proposal(rideId: str = Path(...), body: RideProposal = ...):
+async def submit_proposal(rideId: str = Path(...), body: RideProposal = ...):
     if rideId not in rides:
         raise HTTPException(status_code=404, detail={"error": "not_found", "rideId": rideId})
 
@@ -202,7 +237,19 @@ def submit_proposal(rideId: str = Path(...), body: RideProposal = ...):
         "estimatedEta": body.estimatedEta,
         "estimatedPrice": body.estimatedPrice,
     })
-
+    
+    await rabbitmq_broker.publish_event(
+        event_type="proposal_submitted",
+        ride_id=rideId,
+        service_id=body.serviceId,
+        logical_timestamp=ts,
+        payload={
+            "proposalId": proposal_id,
+            "estimatedEta": body.estimatedEta,
+            "estimatedPrice": body.estimatedPrice,
+        },
+    )
+    
     return {
         "rideId": rideId,
         "proposalId": proposal_id,
@@ -226,7 +273,7 @@ def get_ride_status(rideId: str = Path(...)):
 
 
 @app.patch("/api/v1/rides/{rideId}/status")
-def update_ride_status(rideId: str = Path(...), body: RideStatusUpdate = ...):
+async def update_ride_status(rideId: str = Path(...), body: RideStatusUpdate = ...):
     if rideId not in rides:
         raise HTTPException(status_code=404, detail={"error": "not_found", "rideId": rideId})
 
@@ -256,6 +303,16 @@ def update_ride_status(rideId: str = Path(...), body: RideStatusUpdate = ...):
         "from": saga.state,
         "to": body.newState,
     })
+    
+    await rabbitmq_broker.publish_event(
+        event_type="ride_status_changed",
+        ride_id=rideId,
+        service_id=body.serviceId,
+        logical_timestamp=ts,
+        payload={
+            "newState": body.newState,
+        },
+    )
 
     # Libera lock automaticamente em estados terminais
     if body.newState in ("complete", "cancelled"):
@@ -284,7 +341,7 @@ def get_ride_audit(rideId: str = Path(...)):
 
 
 @app.post("/api/v1/locks/{rideId}")
-def acquire_lock(rideId: str = Path(...), body: LockRequest = ...):
+async def acquire_lock(rideId: str = Path(...), body: LockRequest = ...):
     acquired = lock_mgr.acquire(rideId, body.serviceId, body.ttlSeconds)
 
     if not acquired:
@@ -306,6 +363,17 @@ def acquire_lock(rideId: str = Path(...), body: LockRequest = ...):
             "ttlSeconds": body.ttlSeconds,
         })
 
+    await rabbitmq_broker.publish_event(
+        event_type="lock_event",
+        ride_id=rideId,
+        service_id=body.serviceId,
+        logical_timestamp=ts,
+        payload={
+            "action": "lock_acquired",
+            "ttlSeconds": body.ttlSeconds,
+        },
+    )
+
     return {
         "rideId": rideId,
         "serviceId": body.serviceId,
@@ -316,7 +384,7 @@ def acquire_lock(rideId: str = Path(...), body: LockRequest = ...):
 
 
 @app.delete("/api/v1/locks/{rideId}", status_code=204)
-def release_lock(rideId: str = Path(...), body: LockReleaseRequest = ...):
+async def release_lock(rideId: str = Path(...), body: LockReleaseRequest = ...):
     lock = lock_mgr.get_lock(rideId)
     if lock is None:
         raise HTTPException(status_code=404, detail={
@@ -335,6 +403,17 @@ def release_lock(rideId: str = Path(...), body: LockReleaseRequest = ...):
 
     if rideId in rides:
         append_audit(rideId, "lock_released", body.serviceId, ts, {"reason": "explicit_release"})
+
+    await rabbitmq_broker.publish_event(
+        event_type="lock_event",
+        ride_id=rideId,
+        service_id=body.serviceId,
+        logical_timestamp=ts,
+        payload={
+            "action": "lock_released",
+            "reason": "explicit_release",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -357,3 +436,5 @@ def metrics():
         f"ridefleet_rides_total {len(rides)}",
     ]
     return "\n".join(lines) + "\n"
+
+
