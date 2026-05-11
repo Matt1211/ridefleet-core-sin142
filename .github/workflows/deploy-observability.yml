@@ -21,6 +21,9 @@ jobs:
               || (echo "❌ $dashboard inválido" && exit 1)
           done
 
+      - name: Instalar PyYAML
+        run: pip install pyyaml
+
       - name: Validar provisioning YAML
         run: |
           python3 -c "
