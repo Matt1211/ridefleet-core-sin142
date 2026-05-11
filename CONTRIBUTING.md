@@ -51,3 +51,40 @@ Configure em **Settings → Branches → Branch protection rules**:
 ## Comunicação com os grupos
 
 Toda mudança de spec que afete os grupos deve ser comunicada com **antecedência mínima de 48h** via Issue com label `groups:needs-migration`, mencionando os representantes de cada grupo.
+
+## Membros do Time e Contribuições
+
+| Membro | Contato | Área Principal |
+|--------|---------|---------------|
+| Matheus Costa | @Matt1211 | Arquitetura, Infra, Especificação de API |
+| Emanuel Teixeira Martins | emanuel@itexto.com.br | Reestruturação da arquitetura, autenticação de grupos, Makefile, Swagger |
+| Luana Amie | luanaamie@gmail.com | Integração RabbitMQ (ambiente), Documentação |
+| Gabriel Rodrigues | @GabrielRodrigues22 | Integração RabbitMQ (endpoints FastAPI) |
+| John Kauan | @johnkauan | Configuração de exchanges e filas (broker) |
+
+### Detalhamento por membro
+
+**Matheus Costa**
+- Criação da estrutura inicial do repositório e do stack principal
+- Definição e evolução da especificação OpenAPI (`spec/api/openapi.yaml`, v0.1 → v0.4)
+- Estruturação dos módulos `lock-manager` e `saga-coordinator`
+- Configurações de infraestrutura (`infra/docker-compose.core.yml`) e correções para inicialização correta do RabbitMQ + banco de dados
+- Coordenação de merges e resolução de conflitos
+
+**Emanuel Teixeira Martins**
+- Reestruturação completa da arquitetura do projeto (realizada de forma independente)
+- Implementação do endpoint de registro de grupos (`POST /groups/register` e `GET /groups/register`)
+- Criação e manutenção do `Makefile` de automação de desenvolvimento
+- Atualizações na especificação Swagger e configuração do ambiente PyCharm/FastAPI
+
+**Luana Amie**
+- Integração das variáveis de ambiente do RabbitMQ no stack de desenvolvimento
+- Atualização e revisão do `README.md`
+
+**Gabriel Rodrigues**
+- Integração do cliente RabbitMQ nos endpoints FastAPI (`app/rabbitmq.py`)
+- Publicação e consumo de mensagens nos fluxos de corrida
+
+**John Kauan**
+- Criação e configuração de exchanges e filas no RabbitMQ (`broker/`)
+- Setup inicial do broker para os tópicos do ecossistema RideFleet
