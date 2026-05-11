@@ -1,0 +1,36 @@
+version: "3.9"
+
+# Docker Compose para desenvolvimento local.
+# Sobe apenas o PostgreSQL, exposto em localhost:5432.
+# O servidor FastAPI roda fora do Docker (make dev / uvicorn --reload).
+#
+# Uso direto: docker compose -f infra/docker-compose.dev.yml up -d
+# Via Makefile: make db-up
+
+services:
+
+  db:
+    image: postgres:16-alpine
+    container_name: ridefleet-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ridefleet
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: ridefleet_core
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ridefleet -d ridefleet_core"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - ridefleet-db-data:/var/lib/postgresql/data
+    networks:
+      - ridefleet-dev
+
+networks:
+  ridefleet-dev:
+    driver: bridge
+
+volumes:
+  ridefleet-db-data:
