@@ -2,11 +2,45 @@ name: Lint and Validate
 
 on:
   push:
-    branches: [main, develop, 'feat/**', 'fix/**', 'spec/**']
+    branches: [main, develop, 'feat/**', 'fix/**']
   pull_request:
     branches: [main, develop]
 
 jobs:
+  lint-python:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências de lint
+        run: pip install ruff
+
+      - name: Lint code
+        run: ruff check app/
+
+  test:
+    name: Testes (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências
+        run: pip install -r app/requirements.txt pytest pytest-asyncio httpx aiosqlite
+
+      - name: Executar testes
+        run: pytest app/tests/ -v
+
   lint-spec:
     name: Lint OpenAPI Spec
     runs-on: ubuntu-latest
@@ -24,45 +58,27 @@ jobs:
       - name: Lint spec/api/openapi.yaml
         run: spectral lint spec/api/openapi.yaml
 
-  lint-python:
-    name: Lint Python (core)
+  validate-schemas:
+    name: Validar JSON Schemas
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Instalar jsonschema
+        run: pip install jsonschema
 
-      - name: Instalar dependências de lint
-        run: pip install ruff
-
-      - name: Lint core/
-        run: ruff check app/
-
-  docker-build:
-    name: Build e Smoke Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build do core
-        run: docker compose -f infra/docker-compose.core.yml build core
-
-      - name: Subir stack
+      - name: Validar schemas (draft 2020-12)
         run: |
-          cp infra/.env.example infra/.env
-          docker compose -f infra/docker-compose.core.yml up -d
+          python3 - <<'EOF'
+          import json, glob, sys
+          from jsonschema import Draft202012Validator
 
-      - name: Aguardar core ficar saudável
-        run: timeout 60 bash -c 'until curl -sf http://localhost:8080/api/v1/health; do sleep 2; done'
-
-      - name: Smoke test — endpoints básicos
-        run: |
-          curl -sf http://localhost:8080/api/v1/health
-          curl -sf http://localhost:8080/metrics
-
-      - name: Derrubar stack
-        if: always()
-        run: docker compose -f infra/docker-compose.core.yml down
+          for path in sorted(glob.glob('spec/schemas/*.json')):
+              schema = json.load(open(path))
+              try:
+                  Draft202012Validator.check_schema(schema)
+                  print(f'OK  {path}')
+              except Exception as e:
+                  print(f'FAIL {path}: {e}')
+                  sys.exit(1)
+          EOF

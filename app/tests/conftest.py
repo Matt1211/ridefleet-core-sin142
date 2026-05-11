@@ -5,7 +5,6 @@ Usamos SQLite em memória para não depender de um PostgreSQL rodando.
 A cada teste, o banco começa limpo graças ao fixture de sessão.
 """
 
-import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
