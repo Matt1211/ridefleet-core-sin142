@@ -5,17 +5,28 @@ info:
 
 http:
   method: POST
-  url: "{{CORE_HOST}}/api/v1/groups/register"
+  url: "{{CORE_HOST}}/groups/register"
   body:
     type: json
     data: |-
       {
-        "groupId": "group-a",
+        "groupId": "group-daacbasd",
         "groupName": "Grupo A - Sistemas Distribuídos",
         "serviceUrl": "http://group-a:8081",
         "contactEmail": "grupo-a@ufv.br"
       }
   auth: inherit
+
+runtime:
+  actions:
+    - type: set-variable
+      phase: after-response
+      selector:
+        expression: res.body.apiKey
+        method: jsonq
+      variable:
+        name: API_KEY
+        scope: runtime
 
 settings:
   encodeUrl: true

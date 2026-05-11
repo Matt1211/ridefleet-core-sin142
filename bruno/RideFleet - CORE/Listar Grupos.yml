@@ -5,7 +5,10 @@ info:
 
 http:
   method: GET
-  url: "{{CORE_HOST}}"
+  url: "{{CORE_HOST}}/groups/register"
+  headers:
+    - name: X-API-Key
+      value: "{{API_KEY}}"
   auth: inherit
 
 settings:
