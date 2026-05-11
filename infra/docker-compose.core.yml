@@ -8,20 +8,39 @@ version: "3.9"
 
 services:
 
+  db:
+    image: postgres:16-alpine
+    container_name: ridefleet-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ridefleet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
+      POSTGRES_DB: ridefleet_core
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ridefleet -d ridefleet_core"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ridefleet-net
+
   core:
     build:
       context: ..
       dockerfile: app/Dockerfile
     image: ridefleet-core:latest
     container_name: ridefleet-core
+    restart: on-failure
     ports:
       - "8080:8080"
     environment:
       - RABBITMQ_URL=amqp://${RABBITMQ_USER:-ridefleet}:${RABBITMQ_PASSWORD:-ridefleet}@rabbitmq:5672/
       - RABBITMQ_EXCHANGE=${RABBITMQ_EXCHANGE:-ridefleet.core.events}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-ridefleet}:${POSTGRES_PASSWORD:-secret}@db:5432/ridefleet_core
       - CORE_ENV=${CORE_ENV:-development}
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      db:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/api/v1/health"]
