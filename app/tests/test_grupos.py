@@ -6,7 +6,6 @@ Cobre os dois endpoints:
   GET  /api/v1/groups/register  — protegido, lista todos os grupos
 """
 
-import pytest
 from httpx import AsyncClient
 
 ENDPOINT = "/api/v1/groups/register"
