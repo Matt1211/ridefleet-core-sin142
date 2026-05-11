@@ -64,17 +64,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - name: Instalar jsonschema
+        run: pip install jsonschema
 
-      - name: Instalar ajv-cli
-        run: npm install -g ajv-cli ajv-formats
-
-      - name: Compilar schemas
+      - name: Validar schemas (draft 2020-12)
         run: |
-          for schema in spec/schemas/*.json; do
-            echo "Compilando $schema..."
-            ajv compile -s "$schema"
-          done
+          python3 - <<'EOF'
+          import json, glob, sys
+          from jsonschema import Draft202012Validator
+
+          for path in sorted(glob.glob('spec/schemas/*.json')):
+              schema = json.load(open(path))
+              try:
+                  Draft202012Validator.check_schema(schema)
+                  print(f'OK  {path}')
+              except Exception as e:
+                  print(f'FAIL {path}: {e}')
+                  sys.exit(1)
+          EOF
