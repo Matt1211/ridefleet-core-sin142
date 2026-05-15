@@ -55,6 +55,7 @@ class RabbitMQBroker:
             "ridefleet.proposals": "proposal_submitted",
             "ridefleet.locks": "lock_event",
             "ridefleet.compensations": "compensation_triggered",
+            "ridefleet.auction.requests": "auction_request",
         }
 
         for queue_name, routing_key in queues.items():
@@ -90,6 +91,13 @@ class RabbitMQBroker:
         await self.exchange.publish(
             message,
             routing_key=event_type,
+        )
+        logger.info(
+            "Evento publicado: tipo='%s' corrida=%s serviceId='%s' ts=%d",
+            event_type,
+            ride_id,
+            service_id,
+            logical_timestamp,
         )
 
 

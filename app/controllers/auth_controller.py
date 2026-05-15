@@ -1,5 +1,5 @@
 """
-Controller de autenticação — endpoints públicos e protegidos de grupos.
+Controller de autenticação endpoints públicos e protegidos de grupos.
 
 Responsabilidade: receber a requisição HTTP, montar as dependências
 e devolver a resposta. Toda regra de negócio fica no AuthService.
@@ -22,7 +22,7 @@ router = APIRouter()
 
 
 def _criar_servico(db: AsyncSession = Depends(get_db)) -> AuthService:
-    """Monta o grafo de dependências: repositório → serviço."""
+    """Monta o grafo de dependências: repositório => serviço."""
     repositorio = GroupRepository(db)
     return AuthService(repositorio)
 
@@ -39,7 +39,7 @@ async def registrar_grupo(
     servico: AuthService = Depends(_criar_servico),
 ) -> GroupCredentials:
     """
-    Endpoint público — não requer autenticação.
+    Endpoint público não requer autenticação.
     Registra o grupo e devolve a API Key gerada.
     """
     return await servico.registrar_grupo(dados)

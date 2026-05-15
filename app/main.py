@@ -1,18 +1,62 @@
+import asyncio
+import logging
+import logging.config
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, FastAPI
 
 from app.controllers.auth_controller import router as auth_router
+from app.controllers.ride_controller import router as ride_router
+from app.core.http_client import http_client
 from app.database import create_tables
 from app.exceptions import register_exception_handlers
 from app.rabbitmq import rabbitmq_broker
+from app.workers.auction_worker import iniciar_worker as iniciar_auction_worker
+from app.workers.lock_monitor import monitorar_locks_expirados
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)-8s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
+logging.getLogger("aio_pika").setLevel(logging.WARNING)
+logging.getLogger("aiormq").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("=== RideFleet Core iniciando ===")
     await create_tables()
-    await rabbitmq_broker.connect()
+    logger.info("Banco de dados pronto")
+
+    # Tenta conectar ao RabbitMQ; se falhar (ex.: testes sem broker),
+    # apenas loga o aviso e continua sem os workers.
+    try:
+        await rabbitmq_broker.connect()
+        auction_task = asyncio.create_task(iniciar_auction_worker())
+        logger.info("Auction worker iniciado")
+    except Exception as exc:
+        logger.warning("RabbitMQ indisponível na inicialização: %s", exc)
+        auction_task = None
+
+    monitor_task = asyncio.create_task(monitorar_locks_expirados())
+    logger.info("Lock monitor iniciado")
+    logger.info("=== RideFleet Core pronto para receber requisições ===")
+
     yield
+
+    logger.info("=== RideFleet Core encerrando ===")
+    monitor_task.cancel()
+    if auction_task:
+        auction_task.cancel()
+
+    await http_client.aclose()
     await rabbitmq_broker.close()
 
 
@@ -32,18 +76,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Exception handlers
 register_exception_handlers(app)
-
-# Routers — todos agrupados sob /api/v1
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth_router)
+api_router.include_router(ride_router)
 
 app.include_router(api_router)
 
 
-# Health check (público) - A MELHORAR
+# Health check (público)
 @app.get("/api/v1/health", tags=["health"])
 async def health_check():
     """Verifica se o core está operacional."""

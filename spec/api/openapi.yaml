@@ -301,8 +301,8 @@ paths:
         Aplica uma transição de estado na máquina de estados da saga. O core valida:
 
         1. **Transição permitida** - a transição deve seguir o grafo definido na saga
-           (`request → match → confirm → in_transit → complete`, com desvios para
-           `compensating → cancelled`).
+           (`request => match => confirm => in_transit => complete`, com desvios para
+           `compensating => cancelled`).
 
         2. **Titularidade do lock** - para as transições `confirm`, `in_transit` e
            `complete`, o `serviceId` informado deve ser o detentor ativo do lock

@@ -14,7 +14,11 @@ from sqlalchemy.pool import StaticPool
 from app.main import app as fastapi_app
 from app.database import get_db
 from app.models.base import Base
-import app.models.group  # noqa: F401 — garante que o model está registrado no Base
+import app.models.group            # noqa: F401 — garante que o model está registrado no Base
+import app.models.ride             # noqa: F401
+import app.models.ride_lock        # noqa: F401
+import app.models.ride_proposal    # noqa: F401
+import app.models.ride_audit_event # noqa: F401
 
 engine_teste = create_async_engine(
     "sqlite+aiosqlite:///:memory:",

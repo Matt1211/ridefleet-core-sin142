@@ -26,6 +26,27 @@ class ForbiddenException(Exception):
         self.detail = detail
 
 
+class NotFoundException(Exception):
+    """404 — Recurso não encontrado."""
+
+    def __init__(self, detail: str = "Recurso não encontrado"):
+        self.detail = detail
+
+
+class ConflictException(Exception):
+    """409 — Conflito de estado (ex: lock já detido por outro serviço)."""
+
+    def __init__(self, detail: str = "Conflito"):
+        self.detail = detail
+
+
+class UnprocessableEntityException(Exception):
+    """422 — Transição ou payload inválido."""
+
+    def __init__(self, detail: str = "Entidade não processável"):
+        self.detail = detail
+
+
 class InternalServerErrorException(Exception):
     """500 — Erro interno do servidor."""
 
@@ -65,6 +86,27 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=403,
             content=_error_body("Forbidden", exc.detail),
+        )
+
+    @app.exception_handler(NotFoundException)
+    async def not_found_handler(request: Request, exc: NotFoundException):
+        return JSONResponse(
+            status_code=404,
+            content=_error_body("Not Found", exc.detail),
+        )
+
+    @app.exception_handler(ConflictException)
+    async def conflict_handler(request: Request, exc: ConflictException):
+        return JSONResponse(
+            status_code=409,
+            content=_error_body("Conflict", exc.detail),
+        )
+
+    @app.exception_handler(UnprocessableEntityException)
+    async def unprocessable_handler(request: Request, exc: UnprocessableEntityException):
+        return JSONResponse(
+            status_code=422,
+            content=_error_body("Unprocessable Entity", exc.detail),
         )
 
     @app.exception_handler(InternalServerErrorException)

@@ -1,0 +1,26 @@
+info:
+  name: Atualizar Status
+  type: http
+  seq: 4
+
+http:
+  method: PATCH
+  url: "{{CORE_HOST}}/rides/{{RIDE_UUID}}/status"
+  headers:
+    - name: X-API-Key
+      value: "{{API_KEY}}"
+  body:
+    type: json
+    data: |-
+      {
+        "newState": "confirm",
+        "serviceId": "group-daacbasd",
+        "logicalTimestamp": 5
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
