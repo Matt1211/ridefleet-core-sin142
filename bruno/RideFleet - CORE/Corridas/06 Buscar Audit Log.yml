@@ -1,0 +1,18 @@
+info:
+  name: Buscar Audit Log
+  type: http
+  seq: 6
+
+http:
+  method: GET
+  url: "{{CORE_HOST}}/rides/{{RIDE_UUID}}/audit"
+  headers:
+    - name: X-API-Key
+      value: "{{API_KEY}}"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

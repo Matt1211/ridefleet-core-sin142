@@ -1,0 +1,54 @@
+info:
+  name: Solicitar Corrida
+  type: http
+  seq: 1
+
+http:
+  method: POST
+  url: "{{CORE_HOST}}/rides"
+  headers:
+    - name: X-API-Key
+      value: "{{API_KEY}}"
+  body:
+    type: json
+    data: |-
+      {
+        "originServiceId": "group-daacbasd",
+        "passengerId": "passenger-42",
+        "origin": {
+          "lat": -20.7546,
+          "lng": -42.8825,
+          "street": "Av. P.H. Rolfs",
+          "number": "S/N",
+          "city": "Viçosa",
+          "state": "MG"
+        },
+        "destination": {
+          "lat": -20.7612,
+          "lng": -42.8710,
+          "street": "Rua dos Estudantes",
+          "number": "100",
+          "city": "Viçosa",
+          "state": "MG"
+        },
+        "logicalTimestamp": 1,
+        "auctionTimeoutSeconds": 10
+      }
+  auth: inherit
+
+runtime:
+  actions:
+    - type: set-variable
+      phase: after-response
+      selector:
+        expression: res.body.rideUuid
+        method: jsonq
+      variable:
+        name: RIDE_UUID
+        scope: runtime
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

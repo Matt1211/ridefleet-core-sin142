@@ -1,0 +1,24 @@
+info:
+  name: Liberar Lock
+  type: http
+  seq: 2
+
+http:
+  method: DELETE
+  url: "{{CORE_HOST}}/locks/{{RIDE_UUID}}"
+  headers:
+    - name: X-API-Key
+      value: "{{API_KEY}}"
+  body:
+    type: json
+    data: |-
+      {
+        "serviceId": "group-daacbasd"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

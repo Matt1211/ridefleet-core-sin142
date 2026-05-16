@@ -5,6 +5,7 @@ Responsabilidade: regras de negócio do fluxo de registro.
 O serviço não sabe nada de HTTP — só recebe dados e devolve dados.
 """
 
+import logging
 import secrets
 
 from fastapi import HTTPException
@@ -13,6 +14,8 @@ from app.dtos.auth_request_dto import GroupRegistrationDTO
 from app.dtos.auth_response_dto import GroupCredentials, GroupInfo
 from app.models.group import Group
 from app.repositories.group_repository import GroupRepository
+
+logger = logging.getLogger(__name__)
 
 
 def _gerar_api_key() -> str:
@@ -47,6 +50,12 @@ class AuthService:
         )
 
         grupo_salvo = await self.repositorio.salvar(novo_grupo)
+        logger.info(
+            "Grupo registrado: '%s' | nome: '%s' | URL: %s",
+            grupo_salvo.group_id,
+            grupo_salvo.group_name,
+            grupo_salvo.service_url,
+        )
 
         return GroupCredentials(
             groupId=grupo_salvo.group_id,
