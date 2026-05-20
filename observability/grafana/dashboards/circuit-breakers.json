@@ -1,21 +1,59 @@
 {
   "annotations": { "list": [] },
-  "description": "Estado dos circuit breakers por serviço parceiro (a ser preenchido pelos grupos)",
+  "description": "Estado dos circuit breakers por serviço parceiro",
   "editable": true,
   "panels": [
     {
-      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
-      "id": 1,
-      "options": { "content": "## Circuit Breakers\n\nEste dashboard será preenchido quando os grupos expuserem métricas de circuit breaker.\n\nMétrica esperada: `ridefleet_circuit_breaker_state{service=\"group-X\"}` com valores:\n- `0` = CLOSED (normal)\n- `1` = OPEN (isolado)\n- `2` = HALF_OPEN (teste)\n\nConsulte `docs/onboarding.md` para o formato esperado.", "mode": "markdown" },
-      "title": "",
-      "type": "text"
+      "type": "timeseries",
+      "title": "Estado da Máquina de Estados (Circuit Breaker)",
+      "gridPos": { "h": 15, "w": 24, "x": 0, "y": 0 },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "ridefleet_circuit_breaker_state",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 2.2,
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 3,
+            "fillOpacity": 20
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "CLOSED", "color": "green" },
+                "1": { "text": "OPEN", "color": "red" },
+                "2": { "text": "HALF_OPEN", "color": "orange" }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { 
+          "displayMode": "table", 
+          "placement": "bottom",
+          "calcs": ["lastNotNull"]
+        },
+        "tooltip": { "mode": "multi" }
+      }
     }
   ],
-  "refresh": "10s",
+  "refresh": "5s",
   "schemaVersion": 39,
   "tags": ["ridefleet", "circuit-breaker"],
-  "time": { "from": "now-1h", "to": "now" },
+  "time": { "from": "now-15m", "to": "now" },
   "title": "RideFleet — Circuit Breakers",
   "uid": "ridefleet-circuit-breakers",
-  "version": 1
+  "version": 2
 }

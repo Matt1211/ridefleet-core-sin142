@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, FastAPI
 
 from app.controllers.auth_controller import router as auth_router
+from app.core.metrics import metrics_endpoint, circuit_breaker_metric
 from app.controllers.ride_controller import router as ride_router
 from app.core.http_client import http_client
 from app.database import create_tables
+from prometheus_client import make_asgi_app
 from app.exceptions import register_exception_handlers
 from app.rabbitmq import rabbitmq_broker
 from app.workers.auction_worker import iniciar_worker as iniciar_auction_worker
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI):       
     logger.info("=== RideFleet Core iniciando ===")
     await create_tables()
     logger.info("Banco de dados pronto")
@@ -83,6 +85,10 @@ api_router.include_router(auth_router)
 api_router.include_router(ride_router)
 
 app.include_router(api_router)
+
+# Criação e configuração do endpoint /metrics para o prometheus
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
 
 
 # Health check (público)
