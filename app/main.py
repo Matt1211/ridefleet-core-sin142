@@ -11,7 +11,6 @@ from app.core.metrics import metrics_endpoint, circuit_breaker_metric
 from app.controllers.ride_controller import router as ride_router
 from app.core.http_client import http_client
 from app.database import create_tables
-from prometheus_client import make_asgi_app
 from app.exceptions import register_exception_handlers
 from app.rabbitmq import rabbitmq_broker
 from app.workers.auction_worker import iniciar_worker as iniciar_auction_worker
@@ -87,8 +86,9 @@ api_router.include_router(ride_router)
 app.include_router(api_router)
 
 # Criação e configuração do endpoint /metrics para o prometheus
-metrics_app = make_asgi_app()
-app.mount("/metrics", metrics_app)
+@app.get("/metrics", tags=["observability"])
+async def get_metrics():
+    return metrics_endpoint()
 
 
 # Health check (público)

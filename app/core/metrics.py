@@ -1,5 +1,6 @@
 from prometheus_client import Gauge
 from fastapi import Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 circuit_breaker_metric = Gauge(
     "ridefleet_circuit_breaker_state",
@@ -8,7 +9,4 @@ circuit_breaker_metric = Gauge(
 )
 
 def metrics_endpoint():
-    circuit_breaker_metric.set(1000)
-
-    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
