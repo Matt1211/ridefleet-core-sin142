@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, FastAPI
 
 from app.controllers.auth_controller import router as auth_router
-from app.core.metrics import metrics_endpoint, circuit_breaker_metric
+from app.core.metrics import metrics_endpoint
 from app.controllers.ride_controller import router as ride_router
 from app.core.http_client import http_client
 from app.database import create_tables

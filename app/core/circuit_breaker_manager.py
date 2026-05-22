@@ -1,5 +1,5 @@
 from typing import Dict
-from app.core.circuit_breaker import CircuitBreaker, CircuitBreakerState, circuit_breaker_metric
+from app.core.circuit_breaker import CircuitBreaker, circuit_breaker_metric
 
 # .env.example não está presente na infra, incluir as variaveis de ambiente a seguir e importa-las aqui e no ride controller
 FAILURE_THRESHOLD = 2 # temporario
