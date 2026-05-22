@@ -1,10 +1,9 @@
 from typing import Dict
-from app.core.circuit_breaker import CircuitBreaker, CircuitBreakerState
-from app.core.metrics import circuit_breaker_metric
+from app.core.circuit_breaker import CircuitBreaker, CircuitBreakerState, circuit_breaker_metric
 
 FAILURE_THRESHOLD = 2 # temporario
 
-RECOVERY_TIMEOUT = 5
+RECOVERY_TIMEOUT = 20
 
 class CircuitBreakerManager:
     '''Gerenciador de circuit breakers dos serviços'''
@@ -21,5 +20,5 @@ class CircuitBreakerManager:
             
         return self._breakers[group_id]
     
-# Instancia global do manager
+# Instancia global do circuit breaker manager
 circuit_breaker_manager = CircuitBreakerManager(FAILURE_THRESHOLD, RECOVERY_TIMEOUT)
