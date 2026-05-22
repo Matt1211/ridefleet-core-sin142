@@ -7,3 +7,4 @@ asyncpg==0.30.0
 aio-pika==9.4.3
 celery==5.4.0
 httpx==0.27.2
+prometheus-client>=0.20.0
