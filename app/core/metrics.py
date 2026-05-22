@@ -12,6 +12,7 @@ def metrics_endpoint():
     # Importação interna para evitar importação circular
     from app.core.circuit_breaker_manager import circuit_breaker_manager
 
+    # Verificação ativa dos estados dos circuit breakers
     for breaker in circuit_breaker_manager._breakers.values():
         if breaker.state.name == "OPEN":
             breaker.check_state()
