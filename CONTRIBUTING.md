@@ -61,6 +61,7 @@ Toda mudança de spec que afete os grupos deve ser comunicada com **antecedênci
 | Luana Amie | luanaamie@gmail.com | Integração RabbitMQ (ambiente), Documentação |
 | Gabriel Rodrigues | @GabrielRodrigues22 | Integração RabbitMQ (endpoints FastAPI) |
 | John Kauan | @johnkauan | Configuração de exchanges e filas (broker) |
+| Phelipe Romano Magalhães Rosa | phromanomr@gmail.com | Implementação do Circuit Breaker por Parceiro |
 
 ### Detalhamento por membro
 
@@ -88,3 +89,10 @@ Toda mudança de spec que afete os grupos deve ser comunicada com **antecedênci
 **John Kauan**
 - Criação e configuração de exchanges e filas no RabbitMQ (`broker/`)
 - Setup inicial do broker para os tópicos do ecossistema RideFleet
+
+**Phelipe Romano Magalhães Rosa**
+- Implementação da classe CircuitBreaker e CircuitBreakerManager.
+- Criação da instância de breaker por grupo registrado.
+- Integrar no fluxo de delegação/leilão: ignorar parceiros OPEN, testar os HALF-OPEN.
+- Expor métrica ridefleet_circuit_breaker_state rotulada por grupo .
+- Criação do endpoint `/metrics`
