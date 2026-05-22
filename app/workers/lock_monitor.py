@@ -13,6 +13,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
+from app.core.circuit_breaker_manager import circuit_breaker_manager
 from app.core.lamport_clock import lamport_clock
 from app.database import AsyncSessionLocal
 from app.models.ride import AuctionStatus, RideStatus
@@ -50,10 +51,15 @@ async def monitorar_locks_expirados() -> None:
                 locks_expirados = await lock_repo.listar_expirados(agora)
 
                 for lock in locks_expirados:
+                    # Incremento do contador de falha do circuit breaker
+                    circuit_breaker = circuit_breaker_manager.get_breaker(lock.held_by)
+                    circuit_breaker.fail_increment()
+                    
                     ride = await ride_repo.buscar_por_uuid(lock.ride_uuid)
                     if not ride:
                         await lock_repo.deletar(lock.ride_uuid)
                         continue
+
 
                     if (
                         ride.status in _ESTADOS_TERMINAIS

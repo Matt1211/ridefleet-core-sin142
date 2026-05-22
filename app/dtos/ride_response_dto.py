@@ -94,3 +94,9 @@ class LockConflictDTO(BaseModel):
     rideUuid: str
     heldBy: str
     expiresAt: datetime
+
+class LockPunishmentDTO(BaseModel):
+    error: str
+    message: str
+    service_id: str
+    recovery_time: int

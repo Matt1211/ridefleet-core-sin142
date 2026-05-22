@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.circuit_breaker_manager import circuit_breaker_manager, RECOVERY_TIMEOUT
 from app.core.security import verify_api_key
 from app.database import get_db
 from app.dtos.ride_request_dto import LockRequestDTO, LockReleaseRequestDTO, RideRequestDTO, RideStatusUpdateDTO
@@ -12,6 +13,7 @@ from app.dtos.ride_response_dto import (
     AuditLogDTO,
     AuctionResultDTO,
     LockConflictDTO,
+    LockPunishmentDTO,
     RideAcceptedDTO,
     RideListDTO,
     RideStatusDTO,
@@ -132,7 +134,27 @@ async def atualizar_status(
     servico: RideService = Depends(_criar_servico),
     _grupo_autenticado: Group = Depends(verify_api_key),
 ) -> RideStatusDTO:
-    return await servico.atualizar_status(rideUuid, dados)
+    circuit_breaker = circuit_breaker_manager.get_breaker(dados.serviceId)
+
+    # Verificação do status do circuit breaker
+    if not circuit_breaker.check_state():
+        punishment = LockPunishmentDTO(
+            error = "CIRCUIT_BREAKER_OPEN",
+            message = f"O serviço {dados.serviceId} está temporariamente bloqueado devido a multiplos timeouts e/ou falhas.",
+            service_id = dados.serviceId,
+            recovery_time = RECOVERY_TIMEOUT
+        )
+
+        return JSONResponse(
+            status_code=503,
+            content=punishment.model_dump(mode="json")
+        )
+    
+    resultado = await servico.atualizar_status(rideUuid, dados)
+    
+    circuit_breaker.success()
+    
+    return resultado
 
 @router.get(
     "/rides/{rideUuid}/audit",
@@ -166,7 +188,23 @@ async def adquirir_lock(
     retorna 409 com o corpo LockConflict (rideUuid, heldBy, expiresAt).
     """
     lock_atual = await servico.lock_repo.buscar_por_ride(rideUuid)
+    circuit_breaker = circuit_breaker_manager.get_breaker(dados.serviceId)
+
     agora = datetime.utcnow()
+
+    # Verificação do status do circuit breaker
+    if not circuit_breaker.check_state():
+        punishment = LockPunishmentDTO(
+            error = "CIRCUIT_BREAKER_OPEN",
+            message = f"O serviço {dados.serviceId} está temporariamente bloqueado devido a multiplos timeouts e/ou falhas.",
+            service_id = dados.serviceId,
+            recovery_time = RECOVERY_TIMEOUT
+        )
+
+        return JSONResponse(
+            status_code=503,
+            content=punishment.model_dump(mode="json")
+        )
 
     if (
         lock_atual
@@ -184,6 +222,7 @@ async def adquirir_lock(
         )
 
     resultado = await servico.adquirir_lock(rideUuid, dados)
+
     return JSONResponse(
         status_code=200,
         content=resultado.model_dump(mode="json"),
