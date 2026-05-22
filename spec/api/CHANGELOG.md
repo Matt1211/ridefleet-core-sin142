@@ -20,6 +20,7 @@ Versionamento segue [Semantic Versioning](https://semver.org/).
 - `POST /locks/{rideId}` — adquirir lock distribuído com TTL configurável
 - `DELETE /locks/{rideId}` — liberar lock distribuído
 - `GET /health` — health check do core
+- `GET /metrics` — endpoint de métricas Prometheus
 - Schemas: `RideRequest`, `RideProposal`, `RideStatus`, `RideStatusUpdate`, `RideAccepted`, `AuditLog`, `AuditEvent`, `Location`, `LockRequest`, `LockResponse`, `ErrorResponse`
 - Máquina de estados da saga: `request → match → confirm → in_transit → complete`
 - Estados de compensação: `compensating → cancelled`
@@ -34,6 +35,5 @@ Versionamento segue [Semantic Versioning](https://semver.org/).
 ## Próximas versões
 
 ### Planejado para v0.2.0
-- Endpoint de métricas Prometheus (`GET /metrics`)
 - Suporte a broker pub/sub (pendente ADR-002)
 - Paginação no endpoint de auditoria
