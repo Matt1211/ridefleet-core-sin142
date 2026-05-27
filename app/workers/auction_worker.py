@@ -208,6 +208,25 @@ async def _executar_leilao(
         await db.commit()
         await db.refresh(ride)
 
+        # Publicar evento de status
+        try:
+            await rabbitmq_broker.publish_event(
+                "ride_status_changed",
+                ride_uuid,
+                "core",
+                ts_fechamento,
+                {
+                    "status": ride.status,
+                    "assignedServiceId": ride.recipient_group_id,
+                },
+            )
+        except Exception as rmq_exc:
+            logger.warning(
+                "Falha ao publicar ride_status_changed no leilão para corrida %s: %s",
+                ride_uuid,
+                rmq_exc,
+            )
+
         evento_leilao = RideAuditEvent(
             ride_fk=ride.id,
             ride_uuid=ride_uuid,

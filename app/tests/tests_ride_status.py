@@ -566,3 +566,64 @@ async def test_atualizar_status_logical_timestamp_negativo_retorna_422(
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 422
+
+
+# Requisito 2: Publicação de eventos no RabbitMQ (Enforcer)
+
+async def test_atualizar_status_transicao_invalida_dispara_compensacao(
+    cliente, api_key, mock_rabbitmq
+):
+    """Transição inválida (422) deve disparar o evento compensation_triggered."""
+    ride_uuid = await _criar_corrida(cliente, api_key)
+    mock_rabbitmq.reset_mock()
+
+    # request => confirm é inválida
+    await cliente.patch(
+        ENDPOINT_STATUS.format(rideUuid=ride_uuid),
+        json={"newState": "confirm", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        headers={"X-API-Key": api_key},
+    )
+
+    # Verifica se publicou compensation_triggered
+    chamadas = [call.args[0] for call in mock_rabbitmq.call_args_list]
+    assert "compensation_triggered" in chamadas
+
+
+async def test_atualizar_status_conflito_lock_dispara_compensacao(
+    cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
+):
+    """Falta de lock (409) deve disparar o evento compensation_triggered."""
+    ride_uuid = await _criar_corrida(cliente, api_key)
+    await _forcar_status_match(db_teste, ride_uuid)
+    mock_rabbitmq.reset_mock()
+
+    # grupo-b não tem o lock
+    await cliente.patch(
+        ENDPOINT_STATUS.format(rideUuid=ride_uuid),
+        json={"newState": "confirm", "serviceId": "grupo-b", "logicalTimestamp": 2},
+        headers={"X-API-Key": api_key},
+    )
+
+    chamadas = [call.args[0] for call in mock_rabbitmq.call_args_list]
+    assert "compensation_triggered" in chamadas
+
+
+async def test_atualizar_status_sucesso_publica_ride_status_changed(
+    cliente, api_key, mock_rabbitmq
+):
+    """Transição válida deve publicar o evento ride_status_changed."""
+    ride_uuid = await _criar_corrida(cliente, api_key)
+    mock_rabbitmq.reset_mock()
+
+    await cliente.patch(
+        ENDPOINT_STATUS.format(rideUuid=ride_uuid),
+        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        headers={"X-API-Key": api_key},
+    )
+
+    chamadas = [call.args[0] for call in mock_rabbitmq.call_args_list]
+    assert "ride_status_changed" in chamadas
+    # Verifica o payload
+    chamada_status = next(c for c in mock_rabbitmq.call_args_list if c.args[0] == "ride_status_changed")
+    payload = chamada_status.args[4]
+    assert payload["status"] == "cancelled"
