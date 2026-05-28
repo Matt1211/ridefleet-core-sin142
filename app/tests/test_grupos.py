@@ -55,16 +55,32 @@ async def test_registrar_grupo_sem_email_opcional(cliente: AsyncClient):
     assert resposta.json()["groupId"] == GRUPO_B["groupId"]
 
 
-async def test_registrar_grupo_duplicado_retorna_409(cliente: AsyncClient):
-    """Tentar registrar o mesmo groupId duas vezes deve retornar 409."""
+async def test_re_registrar_grupo_retorna_200_mesma_api_key(cliente: AsyncClient):
+    """Re-registro do mesmo groupId deve retornar 200 com a mesma API Key."""
+    primeira = await cliente.post(ENDPOINT, json=GRUPO_A)
+    assert primeira.status_code == 201
+    api_key_original = primeira.json()["apiKey"]
+
+    segunda = await cliente.post(ENDPOINT, json=GRUPO_A)
+    assert segunda.status_code == 200
+    assert segunda.json()["apiKey"] == api_key_original
+
+
+async def test_re_registrar_grupo_atualiza_service_url(cliente: AsyncClient):
+    """Re-registro com serviceUrl diferente deve atualizar a URL mantendo a mesma chave."""
     await cliente.post(ENDPOINT, json=GRUPO_A)
-    resposta = await cliente.post(ENDPOINT, json=GRUPO_A)
+    api_key = (await cliente.post(ENDPOINT, json=GRUPO_A)).json()["apiKey"]
 
-    assert resposta.status_code == 409
+    nova_url = "http://grupo-a-novo:9000"
+    payload_atualizado = {**GRUPO_A, "serviceUrl": nova_url}
+    resposta = await cliente.post(ENDPOINT, json=payload_atualizado)
 
-    corpo = resposta.json()
-    assert "error" in corpo
-    assert "detail" in corpo
+    assert resposta.status_code == 200
+    assert resposta.json()["apiKey"] == api_key
+
+    grupos = (await cliente.get(ENDPOINT, headers={"X-API-Key": api_key})).json()
+    grupo_a = next(g for g in grupos if g["groupId"] == GRUPO_A["groupId"])
+    assert grupo_a["serviceUrl"] == nova_url
 
 
 async def test_registrar_grupo_sem_group_id_retorna_422(cliente: AsyncClient):

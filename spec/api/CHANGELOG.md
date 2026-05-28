@@ -32,8 +32,24 @@ Versionamento segue [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.1] — 2026-05-28
+
+### Modificado
+- `POST /groups/register` agora é **idempotente (upsert)**:
+  - Primeiro registro retorna `201` com a API Key gerada (comportamento anterior).
+  - Re-registro com mesmo `groupId` retorna `200` com a **mesma API Key**
+    e atualiza `serviceUrl`, `groupName` e `contactEmail`.
+  - Resposta `409` removida — não é mais retornada por este endpoint.
+
+### Motivação
+Serviços cliente reiniciavam o container e perdiam a API Key (não persistida
+localmente), ficando impedidos de re-registrar e integrar. O upsert elimina
+esse atrito na demo individual e na integração multi-grupo.
+
+---
+
 ## Próximas versões
 
-### Planejado para v0.2.0
+### Planejado para v0.5.0
 - Suporte a broker pub/sub (pendente ADR-002)
 - Paginação no endpoint de auditoria

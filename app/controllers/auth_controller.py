@@ -8,6 +8,7 @@ e devolver a resposta. Toda regra de negócio fica no AuthService.
 from typing import List
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import verify_api_key
@@ -29,7 +30,6 @@ def _criar_servico(db: AsyncSession = Depends(get_db)) -> AuthService:
 
 @router.post(
     "/groups/register",
-    status_code=201,
     response_model=GroupCredentials,
     summary="Registrar grupo e obter API Key de acesso",
     operation_id="registerGroup",
@@ -37,12 +37,15 @@ def _criar_servico(db: AsyncSession = Depends(get_db)) -> AuthService:
 async def registrar_grupo(
     dados: GroupRegistrationDTO,
     servico: AuthService = Depends(_criar_servico),
-) -> GroupCredentials:
+) -> JSONResponse:
     """
-    Endpoint público não requer autenticação.
-    Registra o grupo e devolve a API Key gerada.
+    Endpoint público — não requer autenticação.
+    Primeiro registro retorna 201; re-registro idempotente retorna 200
+    com a mesma API Key e serviceUrl atualizado.
     """
-    return await servico.registrar_grupo(dados)
+    creds, criado = await servico.registrar_grupo(dados)
+    status = 201 if criado else 200
+    return JSONResponse(status_code=status, content=creds.model_dump(mode="json"))
 
 
 @router.get(
