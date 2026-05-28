@@ -59,6 +59,9 @@ curl http://localhost:8080/api/v1/health
 
 Leia o [Guia de Onboarding completo](docs/onboarding.md) para os próximos passos.
 
+Para rodar seu serviço junto com o core na mesma máquina (demo individual), veja a seção
+[Rodando seu serviço junto com o Core](docs/onboarding.md#5-rodando-seu-serviço-junto-com-o-core-demo-individual).
+
 ### Comandos úteis (Makefile)
 
 ```bash

@@ -1,0 +1,16 @@
+version: "3.9"
+
+# Roda a suíte de testes em container isolado (SQLite in-memory, sem deps externas).
+# Uso: docker compose -f infra/docker-compose.test.yml up --build --abort-on-container-exit
+# Via Makefile: make test-docker
+
+services:
+
+  test:
+    build:
+      context: ..
+      dockerfile: app/Dockerfile
+      target: test
+    container_name: ridefleet-test
+    environment:
+      - CORE_ENV=test

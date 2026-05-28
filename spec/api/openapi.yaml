@@ -27,10 +27,21 @@ paths:
       tags: [auth]
       security: []
       description: >
-        Registra um novo grupo no ecossistema RideFleet e retorna a API Key
-        que deverá ser enviada em todas as requisições subsequentes via header
-        `X-API-Key`. Cada `groupId` só pode ser registrado uma vez.
-        Este endpoint é público - não requer autenticação.
+        Registra ou re-registra um grupo no ecossistema RideFleet (upsert).
+
+
+        **Primeiro registro (201):** persiste o grupo e retorna a API Key gerada.
+        Guarde esta chave — ela será necessária em todas as requisições subsequentes
+        via header `X-API-Key`.
+
+
+        **Re-registro idempotente (200):** se o `groupId` já existe, atualiza
+        `serviceUrl`, `groupName` e `contactEmail`, e retorna a **mesma API Key**
+        gerada no primeiro registro. Útil para serviços que reiniciam o container
+        e precisam re-registrar sem persistência local da chave.
+
+
+        Este endpoint é público — não requer autenticação.
       requestBody:
         required: true
         content:
@@ -39,17 +50,17 @@ paths:
               $ref: '#/components/schemas/GroupRegistration'
       responses:
         "201":
-          description: Grupo registrado - API Key gerada com sucesso
+          description: Grupo registrado pela primeira vez — API Key gerada
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/GroupCredentials'
-        "409":
-          description: groupId já registrado
+        "200":
+          description: Re-registro idempotente — mesma API Key, serviceUrl atualizado
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/GroupCredentials'
         "422":
           description: Payload inválido
           content:

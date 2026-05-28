@@ -12,57 +12,39 @@ include:
   - docker-compose.core.yml
 
 # ---------------------------------------------------------------------------
-# Serviços dos grupos (descomentar e preencher quando disponíveis)
+# Serviço do grupo cliente — descomente e ajuste para integrar com o core.
+#
+# Como usar:
+#   1. Descomente o bloco abaixo.
+#   2. Substitua "../meu-servico" pelo path relativo ao repo do seu grupo.
+#   3. Ajuste a porta externa (8081) se necessário.
+#   4. Suba tudo: docker compose -f infra/docker-compose.yml up -d
+#
+# Seu serviço receberá callbacks do core via nome do container na ridefleet-net:
+#   POST http://meu-servico:8080/rides/incoming   ← leilão
+#   POST http://meu-servico:8080/rides/{id}/assigned  ← resultado
+#
+# Ao iniciar, registre-se no core (idempotente — seguro em qualquer restart):
+#   POST http://core:8080/api/v1/groups/register
+#   { "groupId": "meu-grupo", "groupName": "...", "serviceUrl": "http://meu-servico:8080" }
+#
+# Ver docs/onboarding.md para o passo-a-passo completo.
 # ---------------------------------------------------------------------------
 
 # services:
 #
-#   group-a:
-#     image: ${GROUP_A_IMAGE}
-#     container_name: ridefleet-group-a
+#   meu-servico:
+#     build:
+#       context: ../meu-servico   # ← path para o repo do seu grupo
+#       dockerfile: Dockerfile
+#     container_name: ridefleet-meu-servico
 #     ports:
-#       - "8081:8080"
+#       - "8081:8080"             # ← porta acessível no host (ajuste se colidir)
 #     environment:
 #       - CORE_URL=http://core:8080/api/v1
-#     networks:
-#       - ridefleet-net
-#
-#   group-b:
-#     image: ${GROUP_B_IMAGE}
-#     container_name: ridefleet-group-b
-#     ports:
-#       - "8082:8080"
-#     environment:
-#       - CORE_URL=http://core:8080/api/v1
-#     networks:
-#       - ridefleet-net
-#
-#   group-c:
-#     image: ${GROUP_C_IMAGE}
-#     container_name: ridefleet-group-c
-#     ports:
-#       - "8083:8080"
-#     environment:
-#       - CORE_URL=http://core:8080/api/v1
-#     networks:
-#       - ridefleet-net
-#
-#   group-d:
-#     image: ${GROUP_D_IMAGE}
-#     container_name: ridefleet-group-d
-#     ports:
-#       - "8084:8080"
-#     environment:
-#       - CORE_URL=http://core:8080/api/v1
-#     networks:
-#       - ridefleet-net
-#
-#   group-e:
-#     image: ${GROUP_E_IMAGE}
-#     container_name: ridefleet-group-e
-#     ports:
-#       - "8085:8080"
-#     environment:
-#       - CORE_URL=http://core:8080/api/v1
+#       - GROUP_ID=meu-grupo      # ← groupId que seu serviço usa ao se registrar
+#     depends_on:
+#       core:
+#         condition: service_healthy
 #     networks:
 #       - ridefleet-net

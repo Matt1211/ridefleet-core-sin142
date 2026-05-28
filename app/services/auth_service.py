@@ -8,8 +8,6 @@ O serviço não sabe nada de HTTP — só recebe dados e devolve dados.
 import logging
 import secrets
 
-from fastapi import HTTPException
-
 from app.dtos.auth_request_dto import GroupRegistrationDTO
 from app.dtos.auth_response_dto import GroupCredentials, GroupInfo
 from app.models.group import Group
@@ -28,18 +26,32 @@ class AuthService:
     def __init__(self, repositorio: GroupRepository):
         self.repositorio = repositorio
 
-    async def registrar_grupo(self, dados: GroupRegistrationDTO) -> GroupCredentials:
+    async def registrar_grupo(self, dados: GroupRegistrationDTO) -> tuple["GroupCredentials", bool]:
         """
-        Registra um novo grupo e devolve as credenciais geradas.
-        Lança 409 se o groupId já existir no banco.
+        Registra ou re-registra um grupo (upsert).
+
+        - Primeiro registro: persiste com nova API Key, retorna (creds, True).
+        - Re-registro (mesmo groupId): atualiza serviceUrl/groupName/contactEmail,
+          mantém a mesma API Key, retorna (creds, False). Só pra testes isso aqui é inseguro eu sei
         """
         grupo_existente = await self.repositorio.buscar_por_group_id(dados.groupId)
 
         if grupo_existente:
-            raise HTTPException(
-                status_code=409,
-                detail=f"groupId '{dados.groupId}' já registrado",
+            grupo_existente.service_url = dados.serviceUrl
+            grupo_existente.group_name = dados.groupName
+            if dados.contactEmail is not None:
+                grupo_existente.contact_email = dados.contactEmail
+            grupo_salvo = await self.repositorio.salvar(grupo_existente)
+            logger.info(
+                "Grupo re-registrado: '%s' | URL atualizada: %s",
+                grupo_salvo.group_id,
+                grupo_salvo.service_url,
             )
+            return GroupCredentials(
+                groupId=grupo_salvo.group_id,
+                apiKey=grupo_salvo.api_key,
+                registeredAt=grupo_salvo.registered_at,
+            ), False
 
         novo_grupo = Group(
             group_id=dados.groupId,
@@ -61,7 +73,7 @@ class AuthService:
             groupId=grupo_salvo.group_id,
             apiKey=grupo_salvo.api_key,
             registeredAt=grupo_salvo.registered_at,
-        )
+        ), True
 
     async def listar_grupos(self) -> list[GroupInfo]:
         """

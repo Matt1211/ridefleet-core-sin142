@@ -12,8 +12,9 @@ PYTHON      := .venv/bin/python
 PYTEST      := .venv/bin/pytest
 UVICORN     := .venv/bin/uvicorn
 PIP         := .venv/bin/pip
-COMPOSE     := docker compose -f infra/docker-compose.core.yml
-COMPOSE_DEV := docker compose -f infra/docker-compose.dev.yml
+COMPOSE      := docker compose -f infra/docker-compose.core.yml
+COMPOSE_DEV  := docker compose -f infra/docker-compose.dev.yml
+COMPOSE_TEST := docker compose -f infra/docker-compose.test.yml
 ENV_FILE    := infra/.env.example
 ENV_TARGET  := infra/.env
 
@@ -21,7 +22,7 @@ ENV_TARGET  := infra/.env
 DATABASE_URL_DEV  := postgresql+asyncpg://ridefleet:secret@localhost:5432/ridefleet_core
 RABBITMQ_URL_DEV  := amqp://ridefleet:ridefleet@localhost:5672/
 
-.PHONY: help install dev db-up db-down test up down build logs health env
+.PHONY: help install dev db-up db-down test test-docker up down build logs health env
 
 # ------------------------------------------------------------------------------
 # help — lista todos os comandos disponíveis (padrão ao chamar `make`)
@@ -36,7 +37,8 @@ help:
 	@echo "  make dev       Sobe o banco + servidor local com hot-reload (porta 8080)"
 	@echo "  make db-up     Sobe apenas o PostgreSQL em background"
 	@echo "  make db-down   Para e remove o container do banco"
-	@echo "  make test      Executa a suíte de testes automatizados"
+	@echo "  make test      Executa a suíte de testes automatizados (local, requer .venv)"
+	@echo "  make test-docker  Executa os testes em container Docker (sem deps locais)"
 	@echo ""
 	@echo "  Docker (stack completo)"
 	@echo "  ─────────────────────────────────────────────────────"
@@ -93,6 +95,12 @@ dev: db-up
 # ------------------------------------------------------------------------------
 test:
 	$(PYTEST) -v
+
+# ------------------------------------------------------------------------------
+# test-docker — constrói a imagem de teste e roda pytest em container isolado
+# ------------------------------------------------------------------------------
+test-docker:
+	$(COMPOSE_TEST) up --build --abort-on-container-exit --exit-code-from test
 
 # ------------------------------------------------------------------------------
 # build — constrói a imagem Docker do core
