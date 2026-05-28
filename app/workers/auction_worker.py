@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 _LOCK_TTL_VENCEDOR = 60
 
+last_processed_timestamp = 0
+
 
 def _parse_excluded(raw: Optional[str]) -> List[str]:
     """Converte a string CSV de grupos excluídos em lista."""
@@ -410,10 +412,13 @@ async def iniciar_worker() -> None:
 
     logger.info("Auction worker aguardando mensagens em ridefleet.auction.requests")
 
+    global last_processed_timestamp
+    
     async with queue.iterator() as messages:
         async for message in messages:
             try:
                 body = json.loads(message.body.decode("utf-8"))
+                logical_timestamp = body.get("logicalTimestamp", 0)
                 ride_uuid: str = body.get("rideId") or ""
                 payload: dict = body.get("payload", {})
                 auction_timeout: int = payload.get("auctionTimeoutSeconds", 10)
@@ -424,6 +429,22 @@ async def iniciar_worker() -> None:
                     await message.ack()
                     continue
 
+                if logical_timestamp < last_processed_timestamp:
+
+                    logger.warning(
+                    "Mensagem fora de ordem descartada: "
+                    "received=%d last=%d",
+                    logical_timestamp,
+                    last_processed_timestamp,
+                    )
+
+                    await message.ack()
+                    continue
+
+                last_processed_timestamp = logical_timestamp
+                
+                await lamport_clock.update(logical_timestamp)
+                
                 await _executar_leilao(ride_uuid, auction_timeout, excluded_groups)
                 await message.ack()
 

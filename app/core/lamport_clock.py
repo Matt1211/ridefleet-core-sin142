@@ -7,7 +7,8 @@ happened-before entre eventos de diferentes processos.
 """
 
 import asyncio
-
+from app.core.metrics import lamport_clock_metric
+MAX_CLOCK_JUMP = 100  # Limite para detectar jumps anormais no clock (ajustável conforme o ambiente)
 
 class LamportClock:
     """Implementação thread-safe do relógio lógico de Lamport para uso assíncrono."""
@@ -20,6 +21,7 @@ class LamportClock:
         """Incrementa o relógio localmente e retorna o novo valor."""
         async with self._lock:
             self._value += 1
+            lamport_clock_metric.set(self._value)
             return self._value
 
     async def update(self, received: int) -> int:
@@ -28,10 +30,16 @@ class LamportClock:
         Aplica a regra: local = max(local, received) + 1.
         """
         async with self._lock:
+            if received - self._value > MAX_CLOCK_JUMP:
+                raise ValueError(
+                    f"Clock jump detectado: "
+                    f"received={received}, local={self._value}. "
+                )
             self._value = max(self._value, received) + 1
+            lamport_clock_metric.set(self._value)
             return self._value
 
-    @property
+    @property 
     def value(self) -> int:
         """Leitura não-bloqueante do valor atual (apenas para observabilidade)."""
         return self._value

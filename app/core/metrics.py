@@ -8,6 +8,11 @@ circuit_breaker_metric = Gauge(
     ["service"],
 )
 
+lamport_clock_metric = Gauge(
+    "ridefleet_logical_timestamp",
+    "Valor atual do relógio lógico de Lamport do core distribuído",
+)
+
 def metrics_endpoint():
     # Importação interna para evitar importação circular
     from app.core.circuit_breaker_manager import circuit_breaker_manager
