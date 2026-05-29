@@ -25,7 +25,7 @@ Cobre:
 
 import pytest
 import pytest_asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 from httpx import AsyncClient

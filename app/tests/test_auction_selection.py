@@ -9,8 +9,6 @@ Cobre os critérios de desempate determinístico:
 Não usa banco de dados, RabbitMQ nem cliente HTTP.
 """
 
-import pytest
-
 from app.models.ride_proposal import RideProposal
 from app.workers.auction_worker import selecionar_vencedor
 
