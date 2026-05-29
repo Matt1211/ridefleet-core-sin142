@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ride_lock import RideLock
 
+from app.core.metrics import locks_acquired_total
+
 
 class LockRepository:
 
@@ -51,6 +53,9 @@ class LockRepository:
             self.db.add(lock)
         await self.db.commit()
         await self.db.refresh(lock)
+
+        locks_acquired_total.labels(service="core").inc()
+
         return lock
 
     async def deletar(self, ride_uuid: str) -> bool:

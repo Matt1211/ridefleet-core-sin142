@@ -20,6 +20,7 @@ from app.models.ride_lock import RideLock
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.lock_repository import LockRepository
 from app.repositories.ride_repository import RideRepository
+from app.core.metrics import saga_transitions_total
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,12 @@ class StateMachineService:
         )
 
         ride.status = dados.newState
+        saga_transitions_total.labels(
+             from_state=old_state,
+            to_state=dados.newState,
+            service="core"
+        ).inc()
+
         ride.core_logical_ts = ts_core
         ride.last_client_ts = dados.logicalTimestamp
 
@@ -180,6 +187,13 @@ class StateMachineService:
         )
 
         ride.status = new_state
+
+        saga_transitions_total.labels(
+             from_state=old_state,
+            to_state=new_state,
+            service="core"
+        ).inc()
+
         ride.core_logical_ts = ts_core
 
         ride = await self.ride_repo.salvar(ride)

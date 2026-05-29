@@ -43,6 +43,7 @@ from app.repositories.lock_repository import LockRepository
 from app.repositories.proposal_repository import ProposalRepository
 from app.repositories.ride_repository import RideRepository
 from app.services.state_machine_service import StateMachineService
+from app.core.metrics import rides_delegated_total, rides_local_total
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,8 @@ class RideService:
                 exc,
             )
 
+        rides_local_total.labels(service="core").inc()
+
         return RideAcceptedDTO(
             rideUuid=ride.ride_uuid,
             logicalTimestamp=ts_core,
@@ -266,7 +269,6 @@ class RideService:
                 )
             raise exc
 
-        # Publicar evento de sucesso
         ts_pub = await lamport_clock.tick()
         try:
             await rabbitmq_broker.publish_event(
@@ -318,6 +320,8 @@ class RideService:
                     ride_uuid,
                     exc,
                 )
+
+            rides_delegated_total.labels(service="core").inc()
 
         lock = await self.lock_repo.buscar_por_ride(ride_uuid)
         return _ride_para_status_dto(ride, lock)

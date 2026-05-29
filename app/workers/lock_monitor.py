@@ -23,6 +23,8 @@ from app.repositories.audit_repository import AuditRepository
 from app.repositories.lock_repository import LockRepository
 from app.repositories.ride_repository import RideRepository
 from app.services.state_machine_service import StateMachineService
+from app.core.metrics import locks_expired_total
+
 
 logger = logging.getLogger(__name__)
 _ESTADOS_TERMINAIS: set[str] = {RideStatus.COMPLETE.value, RideStatus.CANCELLED.value}
@@ -88,6 +90,7 @@ async def monitorar_locks_expirados() -> None:
 
                     # 2. Remove o lock expirado
                     await lock_repo.deletar(lock.ride_uuid)
+                    locks_expired_total.labels(service="core").inc()
 
                     # 3. Transiciona para compensating via máquina de estados
                     ride = await state_machine.aplicar_transicao_core(
@@ -115,11 +118,12 @@ async def monitorar_locks_expirados() -> None:
                                 "excludedGroups": excluidos,
                             },
                         )
+                        ts_status = await lamport_clock.tick()
                         await rabbitmq_broker.publish_event(
                             "ride_status_changed",
                             lock.ride_uuid,
                             "core",
-                            ts_pub,
+                            ts_status,
                             {
                                 "status": ride.status,
                                 "assignedServiceId": ride.recipient_group_id,
@@ -140,3 +144,4 @@ async def monitorar_locks_expirados() -> None:
 
         except Exception as exc:
             logger.error("Erro no monitor de locks: %s", exc, exc_info=True)
+
