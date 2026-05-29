@@ -23,29 +23,33 @@ Cobre:
 
 import pytest
 import pytest_asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
-
+ 
 from httpx import AsyncClient
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-
+ 
 from app.models.ride import Ride, RideStatus
 from app.models.ride_audit_event import RideAuditEvent
 from app.models.ride_lock import RideLock
 from app.rabbitmq import rabbitmq_broker
-
+ 
+# ---------------------------------------------------------------------------
+# Constantes
+# ---------------------------------------------------------------------------
+ 
 ENDPOINT_RIDES = "/api/v1/rides"
 ENDPOINT_STATUS = "/api/v1/rides/{rideUuid}/status"
 ENDPOINT_GRUPOS = "/api/v1/groups/register"
 UUID_INEXISTENTE = "00000000-0000-0000-0000-000000000000"
-
+ 
 GRUPO_ORIGEM = {
     "groupId": "grupo-origem",
     "groupName": "Grupo Origem - Teste",
     "serviceUrl": "http://grupo-origem:8081",
 }
-
+ 
 CORRIDA_VALIDA = {
     "originServiceId": "grupo-origem",
     "passengerId": "passageiro-123",
@@ -68,20 +72,36 @@ CORRIDA_VALIDA = {
     "logicalTimestamp": 1,
     "auctionTimeoutSeconds": 5,
 }
-
+ 
+# ---------------------------------------------------------------------------
+# Fixtures de domínio
+# (infraestrutura — engine, db_teste, cliente — vem do conftest.py)
+# ---------------------------------------------------------------------------
+ 
+ 
 @pytest_asyncio.fixture
 async def api_key(cliente: AsyncClient) -> str:
     resp = await cliente.post(ENDPOINT_GRUPOS, json=GRUPO_ORIGEM)
-    assert resp.status_code == 201
+    assert resp.status_code == 201, (
+        f"Falha ao registrar grupo de teste. "
+        f"Status: {resp.status_code}, Body: {resp.text}"
+    )
     return resp.json()["apiKey"]
-
-
+ 
+ 
 @pytest.fixture
 def mock_rabbitmq():
-    with patch.object(rabbitmq_broker, "publish_event", new_callable=AsyncMock) as mock_pub:
+    with patch.object(
+        rabbitmq_broker, "publish_event", new_callable=AsyncMock
+    ) as mock_pub:
         yield mock_pub
-
-
+ 
+ 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+ 
+ 
 async def _criar_corrida(cliente: AsyncClient, api_key: str) -> str:
     """Cria corrida e retorna rideUuid."""
     resp = await cliente.post(
@@ -91,8 +111,8 @@ async def _criar_corrida(cliente: AsyncClient, api_key: str) -> str:
     )
     assert resp.status_code == 202
     return resp.json()["rideUuid"]
-
-
+ 
+ 
 async def _forcar_status_match(db: AsyncSession, ride_uuid: str) -> None:
     """
     Força o status do ride para 'match' via update direto no banco.
@@ -105,37 +125,48 @@ async def _forcar_status_match(db: AsyncSession, ride_uuid: str) -> None:
     )
     await db.commit()
     db.expunge_all()
-
-
-async def _transferir_lock(db: AsyncSession, ride_uuid: str, novo_detentor: str) -> None:
+ 
+ 
+async def _transferir_lock(
+    db: AsyncSession, ride_uuid: str, novo_detentor: str
+) -> None:
     """Transfere o lock de um ride para outro serviceId."""
     await db.execute(
         update(RideLock)
         .where(RideLock.ride_uuid == ride_uuid)
         .values(
             held_by=novo_detentor,
-            expires_at=datetime.utcnow() + timedelta(seconds=60),
+            # ✅ datetime aware — evita TypeError ao comparar com PG
+            expires_at=datetime.now(tz=timezone.utc) + timedelta(seconds=60),
         )
     )
     await db.commit()
     db.expunge_all()
-
-
+ 
+ 
+# ===========================================================================
 # GET /rides/{rideUuid}/status — Autenticação
+# ===========================================================================
+ 
+ 
 async def test_buscar_status_sem_api_key_retorna_401(cliente):
     resp = await cliente.get(ENDPOINT_STATUS.format(rideUuid=UUID_INEXISTENTE))
     assert resp.status_code == 401
-
-
+ 
+ 
 async def test_buscar_status_api_key_invalida_retorna_401(cliente):
     resp = await cliente.get(
         ENDPOINT_STATUS.format(rideUuid=UUID_INEXISTENTE),
         headers={"X-API-Key": "rfk_invalida_000"},
     )
     assert resp.status_code == 401
-
-
+ 
+ 
+# ===========================================================================
 # GET /rides/{rideUuid}/status — Resposta
+# ===========================================================================
+ 
+ 
 async def test_buscar_status_retorna_200(cliente, api_key, mock_rabbitmq):
     ride_uuid = await _criar_corrida(cliente, api_key)
     resp = await cliente.get(
@@ -143,17 +174,19 @@ async def test_buscar_status_retorna_200(cliente, api_key, mock_rabbitmq):
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 200
-
-
+ 
+ 
 async def test_buscar_status_retorna_404_para_uuid_inexistente(cliente, api_key):
     resp = await cliente.get(
         ENDPOINT_STATUS.format(rideUuid=UUID_INEXISTENTE),
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 404
-
-
-async def test_buscar_status_contem_campos_obrigatorios(cliente, api_key, mock_rabbitmq):
+ 
+ 
+async def test_buscar_status_contem_campos_obrigatorios(
+    cliente, api_key, mock_rabbitmq
+):
     ride_uuid = await _criar_corrida(cliente, api_key)
     resp = await cliente.get(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
@@ -164,8 +197,8 @@ async def test_buscar_status_contem_campos_obrigatorios(cliente, api_key, mock_r
     assert corpo["state"] == "request"
     assert isinstance(corpo["logicalTimestamp"], int)
     assert "updatedAt" in corpo
-
-
+ 
+ 
 async def test_buscar_status_retorna_lock_held_by_quando_lock_existe(
     cliente, api_key, mock_rabbitmq
 ):
@@ -178,19 +211,19 @@ async def test_buscar_status_retorna_lock_held_by_quando_lock_existe(
     corpo = resp.json()
     assert corpo["lockHeldBy"] == "grupo-origem"
     assert corpo["lockExpiresAt"] is not None
-
-
+ 
+ 
 async def test_buscar_status_lock_null_quando_sem_lock(
     cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
 ):
     """Após liberar o lock, lockHeldBy deve ser null."""
-    from sqlalchemy import delete
-
     ride_uuid = await _criar_corrida(cliente, api_key)
-    await db_teste.execute(delete(RideLock).where(RideLock.ride_uuid == ride_uuid))
+    await db_teste.execute(
+        delete(RideLock).where(RideLock.ride_uuid == ride_uuid)
+    )
     await db_teste.commit()
     db_teste.expunge_all()
-
+ 
     resp = await cliente.get(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
         headers={"X-API-Key": api_key},
@@ -198,73 +231,107 @@ async def test_buscar_status_lock_null_quando_sem_lock(
     corpo = resp.json()
     assert corpo["lockHeldBy"] is None
     assert corpo["lockExpiresAt"] is None
-
-
+ 
+ 
+# ===========================================================================
 # PATCH /rides/{rideUuid}/status — Autenticação
+# ===========================================================================
+ 
+ 
 async def test_atualizar_status_sem_api_key_retorna_401(cliente):
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=UUID_INEXISTENTE),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
     )
     assert resp.status_code == 401
-
-
+ 
+ 
 async def test_atualizar_status_api_key_invalida_retorna_401(cliente):
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=UUID_INEXISTENTE),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": "rfk_invalida_000"},
     )
     assert resp.status_code == 401
-
-
+ 
+ 
+# ===========================================================================
 # PATCH /rides/{rideUuid}/status — Transição válida (request => cancelled)
+# ===========================================================================
+ 
+ 
 async def test_atualizar_status_request_para_cancelled_retorna_200(
     cliente, api_key, mock_rabbitmq
 ):
     ride_uuid = await _criar_corrida(cliente, api_key)
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 200
-
-
+ 
+ 
 async def test_atualizar_status_retorna_novo_estado_na_resposta(
     cliente, api_key, mock_rabbitmq
 ):
     ride_uuid = await _criar_corrida(cliente, api_key)
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.json()["state"] == "cancelled"
-
-
+ 
+ 
 async def test_atualizar_status_persiste_novo_estado_no_banco(
     cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
 ):
     ride_uuid = await _criar_corrida(cliente, api_key)
     await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     db_teste.expunge_all()
-    resultado = await db_teste.execute(select(Ride).where(Ride.ride_uuid == ride_uuid))
+    resultado = await db_teste.execute(
+        select(Ride).where(Ride.ride_uuid == ride_uuid)
+    )
     ride = resultado.scalar_one()
     assert ride.status == RideStatus.CANCELLED.value
-
-
+ 
+ 
 async def test_atualizar_status_terminal_libera_lock_automaticamente(
     cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
 ):
     ride_uuid = await _criar_corrida(cliente, api_key)
     await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     db_teste.expunge_all()
@@ -272,15 +339,19 @@ async def test_atualizar_status_terminal_libera_lock_automaticamente(
         select(RideLock).where(RideLock.ride_uuid == ride_uuid)
     )
     assert resultado.scalar_one_or_none() is None
-
-
+ 
+ 
 async def test_atualizar_status_registra_evento_state_transition_no_audit(
     cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
 ):
     ride_uuid = await _criar_corrida(cliente, api_key)
     await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     db_teste.expunge_all()
@@ -292,21 +363,29 @@ async def test_atualizar_status_registra_evento_state_transition_no_audit(
     )
     evento = resultado.scalar_one()
     assert evento.service_id == "grupo-origem"
-
-
+ 
+ 
 async def test_atualizar_status_retorna_ride_uuid_correto(
     cliente, api_key, mock_rabbitmq
 ):
     ride_uuid = await _criar_corrida(cliente, api_key)
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.json()["rideUuid"] == ride_uuid
-
-
+ 
+ 
+# ===========================================================================
 # PATCH /rides/{rideUuid}/status — Transições inválidas (422)
+# ===========================================================================
+ 
+ 
 async def test_atualizar_status_transicao_proibida_retorna_422(
     cliente, api_key, mock_rabbitmq
 ):
@@ -314,12 +393,16 @@ async def test_atualizar_status_transicao_proibida_retorna_422(
     ride_uuid = await _criar_corrida(cliente, api_key)
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "confirm", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "confirm",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 422
-
-
+ 
+ 
 async def test_atualizar_status_de_estado_terminal_retorna_422(
     cliente, api_key, mock_rabbitmq
 ):
@@ -327,17 +410,25 @@ async def test_atualizar_status_de_estado_terminal_retorna_422(
     ride_uuid = await _criar_corrida(cliente, api_key)
     await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 3},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 3,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 422
-
-
+ 
+ 
 async def test_atualizar_status_timestamp_igual_ao_ultimo_retorna_422(
     cliente, api_key, mock_rabbitmq
 ):
@@ -345,34 +436,50 @@ async def test_atualizar_status_timestamp_igual_ao_ultimo_retorna_422(
     ride_uuid = await _criar_corrida(cliente, api_key)
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 1},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 1,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 422
-
-
+ 
+ 
 async def test_atualizar_status_timestamp_menor_que_ultimo_retorna_422(
     cliente, api_key, mock_rabbitmq
 ):
     ride_uuid = await _criar_corrida(cliente, api_key)
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 0},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 0,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 422
-
-
+ 
+ 
 async def test_atualizar_status_uuid_inexistente_retorna_404(cliente, api_key):
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=UUID_INEXISTENTE),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 404
-
-
+ 
+ 
+# ===========================================================================
 # PATCH /rides/{rideUuid}/status — Lock obrigatório (409)
+# ===========================================================================
+ 
+ 
 async def test_atualizar_status_confirm_sem_lock_retorna_409(
     cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
 ):
@@ -382,15 +489,19 @@ async def test_atualizar_status_confirm_sem_lock_retorna_409(
     """
     ride_uuid = await _criar_corrida(cliente, api_key)
     await _forcar_status_match(db_teste, ride_uuid)
-
+ 
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "confirm", "serviceId": "grupo-b", "logicalTimestamp": 2},
+        json={
+            "newState": "confirm",
+            "serviceId": "grupo-b",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 409
-
-
+ 
+ 
 async def test_atualizar_status_confirm_com_lock_retorna_200(
     cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
 ):
@@ -398,24 +509,35 @@ async def test_atualizar_status_confirm_com_lock_retorna_200(
     ride_uuid = await _criar_corrida(cliente, api_key)
     await _forcar_status_match(db_teste, ride_uuid)
     await _transferir_lock(db_teste, ride_uuid, "grupo-b")
-
+ 
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "confirm", "serviceId": "grupo-b", "logicalTimestamp": 2},
+        json={
+            "newState": "confirm",
+            "serviceId": "grupo-b",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 200
     assert resp.json()["state"] == "confirm"
-
-
+ 
+ 
+# ===========================================================================
 # PATCH /rides/{rideUuid}/status — Idempotência
+# ===========================================================================
+ 
+ 
 async def test_atualizar_status_idempotente_retorna_200_na_segunda_chamada(
     cliente, api_key, mock_rabbitmq
 ):
     """Mesmos serviceId + logicalTimestamp: segundo PATCH é idempotente (200)."""
     ride_uuid = await _criar_corrida(cliente, api_key)
-    payload = {"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2}
-
+    payload = {
+        "newState": "cancelled",
+        "serviceId": "grupo-origem",
+        "logicalTimestamp": 2,
+    }
     resp1 = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
         json=payload,
@@ -428,15 +550,18 @@ async def test_atualizar_status_idempotente_retorna_200_na_segunda_chamada(
     )
     assert resp1.status_code == 200
     assert resp2.status_code == 200
-
-
+ 
+ 
 async def test_atualizar_status_idempotente_retorna_mesmo_estado(
     cliente, api_key, mock_rabbitmq
 ):
-    """Chamada idempotente deve retornar o estado atual (cancelled), não tentar re-transicionar."""
+    """Chamada idempotente deve retornar o estado atual (cancelled), não re-transicionar."""
     ride_uuid = await _criar_corrida(cliente, api_key)
-    payload = {"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2}
-
+    payload = {
+        "newState": "cancelled",
+        "serviceId": "grupo-origem",
+        "logicalTimestamp": 2,
+    }
     resp1 = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
         json=payload,
@@ -448,9 +573,13 @@ async def test_atualizar_status_idempotente_retorna_mesmo_estado(
         headers={"X-API-Key": api_key},
     )
     assert resp1.json()["state"] == resp2.json()["state"] == "cancelled"
-
-
+ 
+ 
+# ===========================================================================
 # PATCH /rides/{rideUuid}/status — Compensação
+# ===========================================================================
+ 
+ 
 async def test_atualizar_para_compensating_publica_auction_request(
     cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
 ):
@@ -458,18 +587,22 @@ async def test_atualizar_para_compensating_publica_auction_request(
     ride_uuid = await _criar_corrida(cliente, api_key)
     await _forcar_status_match(db_teste, ride_uuid)
     mock_rabbitmq.reset_mock()
-
+ 
     await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "compensating", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "compensating",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
-
+ 
     assert mock_rabbitmq.call_count >= 1
     event_type = mock_rabbitmq.call_args.args[0]
     assert event_type == "auction_request"
-
-
+ 
+ 
 async def test_atualizar_para_compensating_payload_contem_excluded_groups(
     cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
 ):
@@ -477,37 +610,58 @@ async def test_atualizar_para_compensating_payload_contem_excluded_groups(
     ride_uuid = await _criar_corrida(cliente, api_key)
     await _forcar_status_match(db_teste, ride_uuid)
     mock_rabbitmq.reset_mock()
-
+ 
     await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "compensating", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "compensating",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
-
+ 
     payload = mock_rabbitmq.call_args.args[4]
     assert "grupo-origem" in payload["excludedGroups"]
-
-
+ 
+ 
 async def test_atualizar_para_compensating_persiste_excluded_groups_no_banco(
     cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
 ):
-    """excluded_groups deve ser atualizado no banco após compensating."""
+    """excluded_groups deve conter o grupo após compensating."""
     ride_uuid = await _criar_corrida(cliente, api_key)
     await _forcar_status_match(db_teste, ride_uuid)
-
+ 
     await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "compensating", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "compensating",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
-
+ 
     db_teste.expunge_all()
-    resultado = await db_teste.execute(select(Ride).where(Ride.ride_uuid == ride_uuid))
+    resultado = await db_teste.execute(
+        select(Ride).where(Ride.ride_uuid == ride_uuid)
+    )
     ride = resultado.scalar_one()
-    assert "grupo-origem" in (ride.excluded_groups or "")
-
-
+ 
+    # Suporta tanto JSON (lista) quanto CSV (string) dependendo da
+    # implementação do campo excluded_groups no modelo.
+    grupos = ride.excluded_groups
+    if isinstance(grupos, list):
+        assert "grupo-origem" in grupos
+    else:
+        assert "grupo-origem" in (grupos or "")
+ 
+ 
+# ===========================================================================
 # PATCH /rides/{rideUuid}/status — Validação de payload
+# ===========================================================================
+ 
+ 
 async def test_atualizar_status_payload_vazio_retorna_422(
     cliente, api_key, mock_rabbitmq
 ):
@@ -518,8 +672,8 @@ async def test_atualizar_status_payload_vazio_retorna_422(
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 422
-
-
+ 
+ 
 async def test_atualizar_status_sem_new_state_retorna_422(
     cliente, api_key, mock_rabbitmq
 ):
@@ -530,8 +684,8 @@ async def test_atualizar_status_sem_new_state_retorna_422(
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 422
-
-
+ 
+ 
 async def test_atualizar_status_sem_service_id_retorna_422(
     cliente, api_key, mock_rabbitmq
 ):
@@ -542,8 +696,8 @@ async def test_atualizar_status_sem_service_id_retorna_422(
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 422
-
-
+ 
+ 
 async def test_atualizar_status_sem_logical_timestamp_retorna_422(
     cliente, api_key, mock_rabbitmq
 ):
@@ -554,41 +708,51 @@ async def test_atualizar_status_sem_logical_timestamp_retorna_422(
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 422
-
-
+ 
+ 
 async def test_atualizar_status_logical_timestamp_negativo_retorna_422(
     cliente, api_key, mock_rabbitmq
 ):
     ride_uuid = await _criar_corrida(cliente, api_key)
     resp = await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": -1},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": -1,
+        },
         headers={"X-API-Key": api_key},
     )
     assert resp.status_code == 422
-
-
-# Requisito 2: Publicação de eventos no RabbitMQ (Enforcer)
-
+ 
+ 
+# ===========================================================================
+# Publicação de eventos no RabbitMQ (Enforcer)
+# ===========================================================================
+ 
+ 
 async def test_atualizar_status_transicao_invalida_dispara_compensacao(
     cliente, api_key, mock_rabbitmq
 ):
     """Transição inválida (422) deve disparar o evento compensation_triggered."""
     ride_uuid = await _criar_corrida(cliente, api_key)
     mock_rabbitmq.reset_mock()
-
+ 
     # request => confirm é inválida
     await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "confirm", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "confirm",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
-
-    # Verifica se publicou compensation_triggered
+ 
     chamadas = [call.args[0] for call in mock_rabbitmq.call_args_list]
     assert "compensation_triggered" in chamadas
-
-
+ 
+ 
 async def test_atualizar_status_conflito_lock_dispara_compensacao(
     cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
 ):
@@ -596,34 +760,45 @@ async def test_atualizar_status_conflito_lock_dispara_compensacao(
     ride_uuid = await _criar_corrida(cliente, api_key)
     await _forcar_status_match(db_teste, ride_uuid)
     mock_rabbitmq.reset_mock()
-
+ 
     # grupo-b não tem o lock
     await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "confirm", "serviceId": "grupo-b", "logicalTimestamp": 2},
+        json={
+            "newState": "confirm",
+            "serviceId": "grupo-b",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
-
+ 
     chamadas = [call.args[0] for call in mock_rabbitmq.call_args_list]
     assert "compensation_triggered" in chamadas
-
-
+ 
+ 
 async def test_atualizar_status_sucesso_publica_ride_status_changed(
     cliente, api_key, mock_rabbitmq
 ):
     """Transição válida deve publicar o evento ride_status_changed."""
     ride_uuid = await _criar_corrida(cliente, api_key)
     mock_rabbitmq.reset_mock()
-
+ 
     await cliente.patch(
         ENDPOINT_STATUS.format(rideUuid=ride_uuid),
-        json={"newState": "cancelled", "serviceId": "grupo-origem", "logicalTimestamp": 2},
+        json={
+            "newState": "cancelled",
+            "serviceId": "grupo-origem",
+            "logicalTimestamp": 2,
+        },
         headers={"X-API-Key": api_key},
     )
-
+ 
     chamadas = [call.args[0] for call in mock_rabbitmq.call_args_list]
     assert "ride_status_changed" in chamadas
-    # Verifica o payload
-    chamada_status = next(c for c in mock_rabbitmq.call_args_list if c.args[0] == "ride_status_changed")
+ 
+    chamada_status = next(
+        c for c in mock_rabbitmq.call_args_list
+        if c.args[0] == "ride_status_changed"
+    )
     payload = chamada_status.args[4]
     assert payload["status"] == "cancelled"
