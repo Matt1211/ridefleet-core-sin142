@@ -48,6 +48,29 @@ def _utcnow() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
+def selecionar_vencedor(propostas: List[RideProposal]) -> Optional[RideProposal]:
+    """Seleciona o vencedor do leilão com desempate determinístico.
+
+    Critérios em ordem de prioridade:
+        1. Menor preço  (estimated_price)
+        2. Menor ETA    (estimated_eta)
+        3. group_id em ordem alfabética
+
+    Caller deve passar apenas propostas com status == "accepted".
+    Retorna None se a lista estiver vazia.
+    """
+    if not propostas:
+        return None
+    return min(
+        propostas,
+        key=lambda p: (
+            p.estimated_price if p.estimated_price is not None else float("inf"),
+            p.estimated_eta   if p.estimated_eta   is not None else float("inf"),
+            p.group_id,
+        ),
+    )
+
+
 async def _executar_leilao(
     ride_uuid: str,
     auction_timeout: int,
@@ -231,16 +254,8 @@ async def _executar_leilao(
         # 4. Selecionar vencedor — critérios do escopo:
         #    1. menor preço  2. menor ETA  3. group_id alfabético
         # ------------------------------------------------------------------
-        vencedor: Optional[RideProposal] = None
-        if propostas_aceitas:
-            vencedor = min(
-                propostas_aceitas,
-                key=lambda p: (
-                    p.estimated_price or float("inf"),   # 1. menor preço
-                    p.estimated_eta   or float("inf"),   # 2. menor ETA
-                    p.group_id,                          # 3. alfabético
-                ),
-            )
+        vencedor: Optional[RideProposal] = selecionar_vencedor(propostas_aceitas)
+        if vencedor:
             vencedor.is_winner = 1
             logger.info(
                 "Vencedor selecionado: corrida %s => '%s' (preço: %s, ETA: %s)",

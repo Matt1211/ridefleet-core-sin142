@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.circuit_breaker_manager import RECOVERY_TIMEOUT, circuit_breaker_manager
 from app.core.security import verify_api_key
 from app.database import get_db
+from app.exceptions import ConflictException, ForbiddenException, NotFoundException, UnprocessableEntityException
 from app.dtos.ride_request_dto import (
     LockReleaseRequestDTO,
     LockRequestDTO,
@@ -34,7 +35,7 @@ from app.services.ride_service import RideService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/rides", tags=["rides"])
+router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
@@ -94,11 +95,12 @@ def _verificar_circuit_breaker(service_id: str) -> JSONResponse | None:
 
 
 @router.post(
-    "",
+    "/rides",
     response_model=RideAcceptedDTO,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Criar corrida e iniciar leilão",
     operation_id="createRide",
+    tags=["rides"],
     description=(
         "Registra uma nova corrida em estado `request`, adquire o lock inicial "
         "em nome do grupo solicitante e publica o evento `auction_request` no "
@@ -119,11 +121,12 @@ async def criar_corrida(
 
 
 @router.get(
-    "",
+    "/rides",
     response_model=RideListDTO,
     status_code=status.HTTP_200_OK,
     summary="Listar corridas com filtros opcionais",
     operation_id="listRides",
+    tags=["rides"],
 )
 async def listar_corridas(
     grupo: AuthGroup,
@@ -148,27 +151,12 @@ async def listar_corridas(
 
 
 @router.get(
-    "/{rideUuid}",
-    response_model=RideStatusDTO,
-    status_code=status.HTTP_200_OK,
-    summary="Consultar status de uma corrida (alias REST)",
-    operation_id="getRideStatusAlias",
-    include_in_schema=False,  # evita duplicação no OpenAPI — usa /status como canônico
-)
-async def buscar_status_alias(
-    rideUuid: str,
-    grupo: AuthGroup,
-    service: Service,
-) -> RideStatusDTO:
-    return await service.buscar_status(rideUuid)
-
-
-@router.get(
-    "/{rideUuid}/status",
+    "/rides/{rideUuid}/status",
     response_model=RideStatusDTO,
     status_code=status.HTTP_200_OK,
     summary="Consultar estado atual da corrida",
     operation_id="getRideStatus",
+    tags=["rides"],
 )
 async def buscar_status(
     rideUuid: str,
@@ -179,11 +167,12 @@ async def buscar_status(
 
 
 @router.patch(
-    "/{rideUuid}/status",
+    "/rides/{rideUuid}/status",
     response_model=RideStatusDTO,
     status_code=status.HTTP_200_OK,
     summary="Atualizar estado da corrida (transição de saga)",
     operation_id="updateRideStatus",
+    tags=["rides"],
     responses={503: {"model": LockPunishmentDTO}},
     description=(
         "Aplica uma transição de estado validada pela máquina de estados. "
@@ -213,17 +202,20 @@ async def atualizar_status(
         resultado = await service.atualizar_status(rideUuid, body)
         circuit_breaker.success()
         return resultado
+    except (NotFoundException, UnprocessableEntityException, ConflictException, ForbiddenException):
+        raise
     except Exception:
-        circuit_breaker.failure()
+        circuit_breaker.fail_increment()
         raise
 
 
 @router.get(
-    "/{rideUuid}/proposals",
+    "/rides/{rideUuid}/proposals",
     response_model=AuctionResultDTO,
     status_code=status.HTTP_200_OK,
     summary="Consultar resultado do leilão",
     operation_id="getRideProposals",
+    tags=["rides"],
     description=(
         "Retorna todas as propostas válidas recebidas, o vencedor selecionado "
         "e o status atual do leilão. Disponível para qualquer grupo autenticado."
@@ -238,11 +230,12 @@ async def buscar_propostas(
 
 
 @router.get(
-    "/{rideUuid}/audit",
+    "/rides/{rideUuid}/audit",
     response_model=AuditLogDTO,
     status_code=status.HTTP_200_OK,
     summary="Log causal completo da corrida",
     operation_id="getRideAuditLog",
+    tags=["rides"],
     description="Retorna todos os eventos registrados para a corrida em ordem cronológica.",
 )
 async def buscar_audit_log(
@@ -259,7 +252,7 @@ async def buscar_audit_log(
 
 
 @router.post(
-    "/{rideUuid}/lock",
+    "/locks/{rideUuid}",
     status_code=status.HTTP_200_OK,
     summary="Adquirir lock distribuído sobre a corrida",
     operation_id="acquireLock",
@@ -282,7 +275,7 @@ async def adquirir_lock(
     service: Service,
 ):
     logger.info(
-        "POST /rides/%s/lock | group=%s ttl=%ds",
+        "POST /locks/%s | group=%s ttl=%ds",
         rideUuid,
         body.serviceId,
         body.ttlSeconds,
@@ -296,13 +289,27 @@ async def adquirir_lock(
         resultado = await service.adquirir_lock(rideUuid, body)
         circuit_breaker.success()
         return resultado
+    except ConflictException:
+        lock = await service.lock_repo.buscar_por_ride(rideUuid)
+        if lock:
+            return JSONResponse(
+                status_code=409,
+                content=LockConflictDTO(
+                    rideUuid=rideUuid,
+                    heldBy=lock.held_by,
+                    expiresAt=lock.expires_at,
+                ).model_dump(mode="json"),
+            )
+        raise
+    except (NotFoundException, ForbiddenException):
+        raise
     except Exception:
-        circuit_breaker.failure()
+        circuit_breaker.fail_increment()
         raise
 
 
 @router.delete(
-    "/{rideUuid}/lock",
+    "/locks/{rideUuid}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Liberar lock distribuído",
     operation_id="releaseLock",
@@ -316,7 +323,7 @@ async def liberar_lock(
     service: Service,
 ) -> None:
     logger.info(
-        "DELETE /rides/%s/lock | group=%s",
+        "DELETE /locks/%s | group=%s",
         rideUuid,
         body.serviceId,
     )
