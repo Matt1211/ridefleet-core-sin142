@@ -59,11 +59,7 @@ async def db_teste() -> AsyncSession:
 
 @pytest_asyncio.fixture
 async def cliente(db_teste: AsyncSession) -> AsyncClient:
-    """
-    Cliente HTTP que fala diretamente com a app FastAPI,
-    usando o banco de teste no lugar do banco real.
-    """
-    def substituir_db():
+    async def substituir_db():
         yield db_teste
 
     fastapi_app.dependency_overrides[get_db] = substituir_db

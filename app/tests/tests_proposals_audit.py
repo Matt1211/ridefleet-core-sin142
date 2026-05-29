@@ -25,10 +25,14 @@ Cobre:
 
 import pytest
 import pytest_asyncio
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 from httpx import AsyncClient
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.ride import Ride
 from app.rabbitmq import rabbitmq_broker
 
 ENDPOINT_RIDES = "/api/v1/rides"
@@ -169,6 +173,27 @@ async def test_buscar_propostas_auction_closed_at_null_enquanto_aberto(
         headers={"X-API-Key": api_key},
     )
     assert resp.json()["auctionClosedAt"] is None
+
+
+async def test_buscar_propostas_status_no_proposals_apos_leilao_encerrado_vazio(
+    cliente, api_key, mock_rabbitmq, db_teste: AsyncSession
+):
+    """Leilão encerrado sem propostas deve refletir no endpoint."""
+    ride_uuid = await _criar_corrida(cliente, api_key)
+
+    await db_teste.execute(
+        update(Ride)
+        .where(Ride.ride_uuid == ride_uuid)
+        .values(auction_status="no_proposals", auction_closed_at=datetime.now(tz=timezone.utc))
+    )
+    await db_teste.commit()
+
+    resp = await cliente.get(
+        ENDPOINT_PROPOSALS.format(rideUuid=ride_uuid),
+        headers={"X-API-Key": api_key},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "no_proposals"
 
 
 # GET /rides/{rideUuid}/audit — Autenticação

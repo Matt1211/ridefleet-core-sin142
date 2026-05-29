@@ -1,10 +1,27 @@
+"""
+Worker de leilão — consome auction_request da fila RabbitMQ e executa
+o ciclo completo de um leilão para a corrida indicada.
+
+Fluxo por mensagem:
+  1. Deserializa e valida o payload.
+  2. Publica `ride_created` no exchange fanout (notificação a todos os grupos).
+  3. Executa scatter-gather HTTP para coleta de propostas.
+  4. Seleciona o vencedor de forma determinística.
+  5. Persiste resultado, transfere lock e notifica o vencedor.
+  6. Publica `ride_status_changed`.
+
+Critérios de seleção do vencedor (conforme escopo):
+  1. Menor preço
+  2. Menor ETA
+  3. group_id em ordem alfabética
+"""
+
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-import aio_pika
 import httpx
 
 from app.core.http_client import http_client
@@ -15,7 +32,6 @@ from app.models.ride import AuctionStatus, Ride, RideStatus
 from app.models.ride_audit_event import RideAuditEvent
 from app.models.ride_proposal import RideProposal
 from app.rabbitmq import rabbitmq_broker
-from app.repositories.audit_repository import AuditRepository
 from app.repositories.group_repository import GroupRepository
 from app.repositories.lock_repository import LockRepository
 from app.repositories.proposal_repository import ProposalRepository
@@ -25,14 +41,34 @@ logger = logging.getLogger(__name__)
 
 _LOCK_TTL_VENCEDOR = 60
 
-last_processed_timestamp = 0
+
+def _utcnow() -> datetime:
+    """Retorna datetime aware em UTC — substitui datetime.utcnow() em todo o módulo."""
+    return datetime.now(tz=timezone.utc)
 
 
-def _parse_excluded(raw: Optional[str]) -> List[str]:
-    """Converte a string CSV de grupos excluídos em lista."""
-    if not raw:
-        return []
-    return [g for g in raw.split(",") if g]
+def selecionar_vencedor(propostas: List[RideProposal]) -> Optional[RideProposal]:
+    """Seleciona o vencedor do leilão com desempate determinístico.
+
+    Critérios em ordem de prioridade:
+        1. Menor preço  (estimated_price)
+        2. Menor ETA    (estimated_eta)
+        3. group_id em ordem alfabética
+
+    Caller deve passar apenas propostas com status == "accepted".
+    Retorna None se a lista estiver vazia.
+    """
+    if not propostas:
+        return None
+    return min(
+        propostas,
+        key=lambda p: (
+            p.estimated_price if p.estimated_price is not None else float("inf"),
+            p.estimated_eta   if p.estimated_eta   is not None else float("inf"),
+            p.group_id,
+        ),
+    )
+
 
 async def _executar_leilao(
     ride_uuid: str,
@@ -41,16 +77,15 @@ async def _executar_leilao(
 ) -> None:
     """
     Executa um leilão completo para a corrida indicada:
-      1. Notifica todos os grupos elegíveis em paralelo.
-      2. Coleta propostas.
-      3. Seleciona o vencedor (ETA => preço => ts lógico => groupId).
+      1. Publica `ride_created` no exchange fanout.
+      2. Notifica todos os grupos elegíveis via HTTP em paralelo.
+      3. Coleta propostas e seleciona o vencedor.
       4. Transfere o lock ao vencedor e notifica-o via callback.
-      5. Persiste o resultado no banco.
+      5. Persiste o resultado e publica `ride_status_changed`.
     """
     async with AsyncSessionLocal() as db:
         ride_repo = RideRepository(db)
         lock_repo = LockRepository(db)
-        audit_repo = AuditRepository(db)
         proposal_repo = ProposalRepository(db)
         group_repo = GroupRepository(db)
 
@@ -59,7 +94,7 @@ async def _executar_leilao(
             logger.error("Leilão: corrida %s não encontrada no banco", ride_uuid)
             return
 
-        # Idempotência: leilão já finalizado => nada a fazer
+        # Idempotência — leilão já finalizado: nada a fazer
         if ride.auction_status != AuctionStatus.OPEN.value:
             logger.info(
                 "Leilão da corrida %s já encerrado (status: '%s') — mensagem ignorada",
@@ -77,15 +112,59 @@ async def _executar_leilao(
 
         nomes_participantes = [g.group_id for g in grupos_participantes]
         logger.info(
-            "Leilão iniciado: corrida %s | timeout: %ds | %d grupo(s) elegível(is): %s",
+            "Leilão iniciado: corrida %s | timeout: %ds | %d grupo(s): %s",
             ride_uuid,
             auction_timeout,
             len(grupos_participantes),
-            nomes_participantes if nomes_participantes else "(nenhum)",
+            nomes_participantes or "(nenhum)",
         )
 
-        deadline = datetime.utcnow() + timedelta(seconds=auction_timeout)
+        deadline = _utcnow() + timedelta(seconds=auction_timeout)
 
+        # ------------------------------------------------------------------
+        # 1. Publicar ride_created (topics.yaml: publisher=core, subscribers=all_groups)
+        # ------------------------------------------------------------------
+        ts_criacao = await lamport_clock.tick()
+        try:
+            await rabbitmq_broker.publish_event(
+                "ride_created",
+                ride_uuid,
+                "core",
+                ts_criacao,
+                {
+                    "origin": {
+                        "lat": ride.origin_lat,
+                        "lng": ride.origin_lng,
+                        "street": ride.origin_street,
+                        "number": ride.origin_number,
+                        "city": ride.origin_city,
+                        "state": ride.origin_state,
+                    },
+                    "destination": {
+                        "lat": ride.dest_lat,
+                        "lng": ride.dest_lng,
+                        "street": ride.dest_street,
+                        "number": ride.dest_number,
+                        "city": ride.dest_city,
+                        "state": ride.dest_state,
+                    },
+                    "passengerId": ride.passenger_uuid,
+                    "originServiceId": ride.origin_group_id,
+                    "auctionDeadline": deadline.isoformat(),
+                    "excludedGroups": excluded_groups,
+                },
+            )
+            logger.info("ride_created publicado | ride=%s", ride_uuid)
+        except Exception as exc:
+            logger.warning(
+                "Falha ao publicar ride_created para corrida %s: %s — continuando",
+                ride_uuid,
+                exc,
+            )
+
+        # ------------------------------------------------------------------
+        # 2. Scatter-gather HTTP
+        # ------------------------------------------------------------------
         ts_notif = await lamport_clock.tick()
         notificacao = RideIncomingNotificationDTO(
             rideUuid=ride_uuid,
@@ -117,6 +196,9 @@ async def _executar_leilao(
         ]
         resultados = await asyncio.gather(*tarefas, return_exceptions=True)
 
+        # ------------------------------------------------------------------
+        # 3. Classificar propostas
+        # ------------------------------------------------------------------
         propostas_aceitas: List[RideProposal] = []
         todas_propostas: List[RideProposal] = []
 
@@ -144,11 +226,11 @@ async def _executar_leilao(
                 if prop.status == "accepted":
                     propostas_aceitas.append(prop)
                     logger.info(
-                        "Proposta aceita: grupo '%s' para corrida %s (ETA: %s, preço: %s)",
+                        "Proposta aceita: grupo '%s' | corrida %s | preço: %s | ETA: %s",
                         grupo.group_id,
                         ride_uuid,
-                        prop.estimated_eta,
                         prop.estimated_price,
+                        prop.estimated_eta,
                     )
                 else:
                     logger.info(
@@ -157,40 +239,37 @@ async def _executar_leilao(
                         ride_uuid,
                         prop.status,
                     )
-
             todas_propostas.append(prop)
 
         logger.info(
-            "Coleta encerrada: corrida %s | %d proposta(s) total, %d aceita(s)",
+            "Coleta encerrada: corrida %s | %d total, %d aceita(s)",
             ride_uuid,
             len(todas_propostas),
             len(propostas_aceitas),
         )
 
-        vencedor: Optional[RideProposal] = None
-        if propostas_aceitas:
-            vencedor = min(
-                propostas_aceitas,
-                key=lambda p: (
-                    p.estimated_eta or float("inf"),
-                    p.estimated_price or float("inf"),
-                    p.logical_timestamp or float("inf"),
-                    p.group_id,
-                ),
-            )
+        # ------------------------------------------------------------------
+        # 4. Selecionar vencedor — critérios do escopo:
+        #    1. menor preço  2. menor ETA  3. group_id alfabético
+        # ------------------------------------------------------------------
+        vencedor: Optional[RideProposal] = selecionar_vencedor(propostas_aceitas)
+        if vencedor:
             vencedor.is_winner = 1
             logger.info(
-                "Vencedor selecionado: corrida %s => '%s' (ETA: %s, preço: %s)",
+                "Vencedor selecionado: corrida %s => '%s' (preço: %s, ETA: %s)",
                 ride_uuid,
                 vencedor.group_id,
-                vencedor.estimated_eta,
                 vencedor.estimated_price,
+                vencedor.estimated_eta,
             )
 
         await proposal_repo.criar_varios(todas_propostas)
 
+        # ------------------------------------------------------------------
+        # 5. Fechar leilão no banco
+        # ------------------------------------------------------------------
         ts_fechamento = await lamport_clock.tick()
-        agora_fechamento = datetime.utcnow()
+        agora_fechamento = _utcnow()
 
         if vencedor:
             grupo_vencedor = next(
@@ -210,7 +289,9 @@ async def _executar_leilao(
         await db.commit()
         await db.refresh(ride)
 
-        # Publicar evento de status
+        # ------------------------------------------------------------------
+        # 6. Publicar ride_status_changed
+        # ------------------------------------------------------------------
         try:
             await rabbitmq_broker.publish_event(
                 "ride_status_changed",
@@ -222,11 +303,11 @@ async def _executar_leilao(
                     "assignedServiceId": ride.recipient_group_id,
                 },
             )
-        except Exception as rmq_exc:
+        except Exception as exc:
             logger.warning(
-                "Falha ao publicar ride_status_changed no leilão para corrida %s: %s",
+                "Falha ao publicar ride_status_changed para corrida %s: %s",
                 ride_uuid,
-                rmq_exc,
+                exc,
             )
 
         evento_leilao = RideAuditEvent(
@@ -252,25 +333,29 @@ async def _executar_leilao(
             )
             return
 
+        # ------------------------------------------------------------------
+        # 7. Transferir lock ao vencedor
+        # ------------------------------------------------------------------
         lock_expires = agora_fechamento + timedelta(seconds=_LOCK_TTL_VENCEDOR)
-        await lock_repo.criar_ou_renovar(ride_uuid, vencedor.group_id, lock_expires, ride.id)
+        await lock_repo.criar_ou_renovar(
+            ride_uuid, vencedor.group_id, lock_expires, ride.id
+        )
         logger.info(
-            "Lock transferido para '%s' (corrida %s, expira: %s)",
+            "Lock transferido para '%s' | corrida %s | expira: %s",
             vencedor.group_id,
             ride_uuid,
             lock_expires.strftime("%H:%M:%S"),
         )
 
         ts_lock = await lamport_clock.tick()
-        evento_lock = RideAuditEvent(
+        db.add(RideAuditEvent(
             ride_fk=ride.id,
             ride_uuid=ride_uuid,
             event_type="lock_acquired",
             service_id=vencedor.group_id,
             logical_timestamp=ts_lock,
             payload={"reason": "auction_winner", "ttlSeconds": _LOCK_TTL_VENCEDOR},
-        )
-        db.add(evento_lock)
+        ))
         await db.commit()
 
     await _notificar_vencedor(
@@ -291,14 +376,14 @@ async def _chamar_grupo(
     Envia POST {serviceUrl}/rides/incoming e retorna um RideProposal.
     Nunca lança exceções — erros ficam encapsulados no status da proposta.
     """
-    inicio = datetime.utcnow()
+    inicio = _utcnow()
     try:
         resp = await http_client.post(
             f"{service_url}/rides/incoming",
             json=notificacao.model_dump(mode="json"),
             timeout=httpx.Timeout(timeout_segundos + 2.0),
         )
-        elapsed_ms = int((datetime.utcnow() - inicio).total_seconds() * 1000)
+        elapsed_ms = int((_utcnow() - inicio).total_seconds() * 1000)
 
         if resp.status_code == 204:
             return RideProposal(
@@ -306,7 +391,7 @@ async def _chamar_grupo(
                 service_url=service_url,
                 status="passed",
                 response_time_ms=elapsed_ms,
-                responded_at=datetime.utcnow(),
+                responded_at=_utcnow(),
             )
 
         if resp.status_code == 200:
@@ -319,7 +404,7 @@ async def _chamar_grupo(
                 estimated_price=dados.get("estimatedPrice"),
                 logical_timestamp=dados.get("logicalTimestamp"),
                 response_time_ms=elapsed_ms,
-                responded_at=datetime.utcnow(),
+                responded_at=_utcnow(),
             )
 
         return RideProposal(
@@ -327,11 +412,14 @@ async def _chamar_grupo(
             service_url=service_url,
             status="error",
             response_time_ms=elapsed_ms,
-            responded_at=datetime.utcnow(),
+            responded_at=_utcnow(),
         )
 
     except httpx.TimeoutException:
-        elapsed_ms = int((datetime.utcnow() - inicio).total_seconds() * 1000)
+        elapsed_ms = int((_utcnow() - inicio).total_seconds() * 1000)
+        logger.warning(
+            "Timeout ao chamar grupo '%s' após %dms", group_id, elapsed_ms
+        )
         return RideProposal(
             group_id=group_id,
             service_url=service_url,
@@ -339,7 +427,7 @@ async def _chamar_grupo(
             response_time_ms=elapsed_ms,
         )
     except Exception as exc:
-        logger.warning("Erro ao chamar grupo %s: %s", group_id, exc)
+        logger.warning("Erro ao chamar grupo '%s': %s", group_id, exc)
         return RideProposal(
             group_id=group_id,
             service_url=service_url,
@@ -381,24 +469,26 @@ async def _notificar_vencedor(
     try:
         await http_client.post(url, json=payload, timeout=10.0)
         logger.info(
-            "Vencedor '%s' notificado da corrida %s (POST %s)",
+            "Vencedor '%s' notificado | corrida %s | POST %s",
             ride.recipient_group_id,
             ride.ride_uuid,
             url,
         )
     except Exception as exc:
         logger.warning(
-            "Falha ao notificar vencedor em %s para corrida %s: %s",
+            "Falha ao notificar vencedor em %s | corrida %s: %s",
             url,
             ride.ride_uuid,
             exc,
         )
 
+
 async def iniciar_worker() -> None:
     """
-    Inicia o consumer RabbitMQ para a fila ridefleet.auction.requests
-    Usa um canal dedicado com prefetch_count=1 para garantir que apenas
-    uma mensagem seja processada por vez neste worker.
+    Inicia o consumer RabbitMQ para a fila ridefleet.auction.requests.
+
+    Usa prefetch_count=1 para garantir que apenas uma mensagem seja
+    processada por vez — evita condição de corrida em leilões simultâneos.
     ACK somente após processamento completo; NACK + requeue em caso de erro.
     """
     if not rabbitmq_broker.connection:
@@ -412,44 +502,45 @@ async def iniciar_worker() -> None:
 
     logger.info("Auction worker aguardando mensagens em ridefleet.auction.requests")
 
-    global last_processed_timestamp
-    
+    # Escopo local — sem estado global mutável
+    last_processed_timestamp = 0
+
     async with queue.iterator() as messages:
         async for message in messages:
             try:
                 body = json.loads(message.body.decode("utf-8"))
-                logical_timestamp = body.get("logicalTimestamp", 0)
+                logical_timestamp: int = body.get("logicalTimestamp", 0)
                 ride_uuid: str = body.get("rideId") or ""
                 payload: dict = body.get("payload", {})
                 auction_timeout: int = payload.get("auctionTimeoutSeconds", 10)
                 excluded_groups: List[str] = payload.get("excludedGroups", [])
 
                 if not ride_uuid:
-                    logger.error("Mensagem sem rideId: %s", body)
+                    logger.error("Mensagem sem rideId descartada: %s", body)
                     await message.ack()
                     continue
 
                 if logical_timestamp < last_processed_timestamp:
-
                     logger.warning(
-                    "Mensagem fora de ordem descartada: "
-                    "received=%d last=%d",
-                    logical_timestamp,
-                    last_processed_timestamp,
+                        "Mensagem fora de ordem descartada: "
+                        "received=%d last=%d ride=%s",
+                        logical_timestamp,
+                        last_processed_timestamp,
+                        ride_uuid,
                     )
-
                     await message.ack()
                     continue
 
                 last_processed_timestamp = logical_timestamp
-                
                 await lamport_clock.update(logical_timestamp)
-                
+
                 await _executar_leilao(ride_uuid, auction_timeout, excluded_groups)
                 await message.ack()
 
             except Exception as exc:
                 logger.error(
-                    "Erro no auction worker ao processar mensagem: %s", exc, exc_info=True
+                    "Erro no auction worker ao processar mensagem: %s",
+                    exc,
+                    exc_info=True,
                 )
                 await message.nack(requeue=True)
