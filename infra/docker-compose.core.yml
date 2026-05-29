@@ -26,6 +26,7 @@ services:
     build:
       context: ..
       dockerfile: app/Dockerfile
+      target: base
     image: ridefleet-core:latest
     container_name: ridefleet-core
     restart: on-failure
