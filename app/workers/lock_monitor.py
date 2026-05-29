@@ -118,6 +118,17 @@ async def monitorar_locks_expirados() -> None:
                                 "excludedGroups": excluidos,
                             },
                         )
+                        ts_status = await lamport_clock.tick()
+                        await rabbitmq_broker.publish_event(
+                            "ride_status_changed",
+                            lock.ride_uuid,
+                            "core",
+                            ts_status,
+                            {
+                                "status": ride.status,
+                                "assignedServiceId": ride.recipient_group_id,
+                            },
+                        )
                         logger.info(
                             "Compensação publicada: corrida %s => re-leilão "
                             "(grupos excluídos: %s)",

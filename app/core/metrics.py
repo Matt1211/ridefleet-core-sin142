@@ -8,6 +8,11 @@ circuit_breaker_metric = Gauge(
     ["service"],
 )
 
+lamport_clock_metric = Gauge(
+    "ridefleet_logical_timestamp",
+    "Valor atual do relógio lógico de Lamport do core distribuído",
+)
+
 rides_local_total = Counter(
     "ridefleet_rides_local_total",
     "Quantidade de corridas locais",
@@ -46,7 +51,5 @@ def metrics_endpoint():
     for breaker in circuit_breaker_manager._breakers.values():
         if breaker.state.name == "OPEN":
             breaker.check_state()
-
-    rides_local_total.labels(service="core").inc()
 
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

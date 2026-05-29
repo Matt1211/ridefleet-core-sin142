@@ -31,7 +31,7 @@ from app.dtos.ride_response_dto import (
     RideListDTO,
     RideStatusDTO,
 )
-from app.exceptions import ConflictException, ForbiddenException, NotFoundException
+from app.exceptions import ConflictException, ForbiddenException, NotFoundException, UnprocessableEntityException
 from app.models.group import Group
 from app.models.ride import AuctionStatus, Ride, RideStatus
 from app.models.ride_audit_event import RideAuditEvent
@@ -43,7 +43,7 @@ from app.repositories.lock_repository import LockRepository
 from app.repositories.proposal_repository import ProposalRepository
 from app.repositories.ride_repository import RideRepository
 from app.services.state_machine_service import StateMachineService
-from app.core.metrics import rides_delegated_total
+from app.core.metrics import rides_delegated_total, rides_local_total
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +179,8 @@ class RideService:
                 exc,
             )
 
+        rides_local_total.labels(service="core").inc()
+
         return RideAcceptedDTO(
             rideUuid=ride.ride_uuid,
             logicalTimestamp=ts_core,
@@ -247,7 +249,44 @@ class RideService:
             lock = await self.lock_repo.buscar_por_ride(ride_uuid)
             return _ride_para_status_dto(ride, lock)
 
-        ride, lock = await self.state_machine.aplicar_transicao_grupo(ride_uuid, dados)
+        try:
+            ride, lock = await self.state_machine.aplicar_transicao_grupo(ride_uuid, dados)
+        except (UnprocessableEntityException, ConflictException) as exc:
+            ts_comp = await lamport_clock.tick()
+            try:
+                await rabbitmq_broker.publish_event(
+                    "compensation_triggered",
+                    ride_uuid,
+                    "core",
+                    ts_comp,
+                    {"reason": str(exc), "failedState": dados.newState},
+                )
+            except Exception as publish_exc:
+                logger.warning(
+                    "Falha ao publicar compensation_triggered para corrida %s: %s",
+                    ride_uuid,
+                    publish_exc,
+                )
+            raise exc
+
+        ts_pub = await lamport_clock.tick()
+        try:
+            await rabbitmq_broker.publish_event(
+                "ride_status_changed",
+                ride_uuid,
+                dados.serviceId,
+                ts_pub,
+                {
+                    "status": ride.status,
+                    "assignedServiceId": ride.recipient_group_id,
+                },
+            )
+        except Exception as publish_exc:
+            logger.warning(
+                "Falha ao publicar ride_status_changed para corrida %s: %s",
+                ride_uuid,
+                publish_exc,
+            )
 
         if dados.newState == RideStatus.COMPENSATING.value:
             excluidos = _parse_excluded(ride.excluded_groups)
