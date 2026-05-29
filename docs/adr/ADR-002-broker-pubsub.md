@@ -1,64 +1,36 @@
 # ADR-002 — Broker Pub/Sub
 
 **Data:** 2026-04-11
-**Status:** Decidido
+**Status:** Implementado
 **Autores:** Subgrupo Core — RideFleet
-**Aprovado por:** (pendente — escalar ao Prof. Damaso se não houver consenso até 18/04)
 
 ## Contexto
 
-O core precisa gerenciar tópicos pub/sub para rotear eventos entre os serviços (corrida criada, proposta submetida, status atualizado, etc.). A escolha do broker afeta todos os grupos, pois eles precisarão se conectar a ele para receber e publicar eventos.
+O Core precisa gerenciar tópicos pub/sub para rotear eventos entre os serviços (corrida criada, proposta, status, locks, compensação). A escolha do broker afeta todos os grupos, pois eles precisam se conectar para receber eventos.
 
-Por ora, o `docker-compose.core.yml` usa **RabbitMQ** como placeholder provisional. Esse arquivo deve ser atualizado após a decisão.
+## Opções avaliadas
 
-## Opções em discussão
+| Opção | Prós | Contras |
+|-------|------|---------|
+| Redis Streams | Container único, baixa barreira | Não é broker dedicado; menos observabilidade |
+| **RabbitMQ** ✅ | Broker maduro, admin UI excelente, bibliotecas em todas as linguagens, modelo topic/exchange flexível | Container adicional (~150 MB); curva AMQP |
+| Apache Kafka | Padrão indústria, alta durabilidade | Operacionalmente pesado (ZooKeeper/KRaft); excessivo para 5 grupos |
 
-### Opção A — Redis Streams
+## Decisão
 
-**Prós:**
-- Container único, já presente no stack (também usado como lock store provisional)
-- Baixíssima barreira de entrada; todos os grupos conhecem Redis
-- Redis Streams tem semântica pub/sub + consumer groups adequada ao projeto
+**RabbitMQ 3.13** com exchange do tipo **topic** (`ridefleet.core.events`).
 
-**Contras:**
-- Não é um broker de mensagens dedicado
-- Menos tooling de observabilidade nativo que Kafka/RabbitMQ
+## Implementação
 
----
+- Exchange: `ridefleet.core.events` (topic, durable)
+- 8 filas declaradas automaticamente na inicialização do Core (`app/rabbitmq.py`)
+- Mensagens persistentes (`DeliveryMode.PERSISTENT`)
+- Auction worker usa `prefetch_count=1` para serializar leilões por vez
 
-### Opção B — RabbitMQ (Recomendada pelo core)
+Ver [`broker/README.md`](../../broker/README.md) para a tabela completa de filas e routing keys.
 
-**Prós:**
-- Broker de mensagens maduro com suporte a múltiplos protocolos (AMQP, STOMP, MQTT)
-- Interface de administração excelente (`http://localhost:15672`)
-- Bem documentado; bibliotecas em todas as linguagens dos grupos
-- Modelo de exchange/queue flexível
+## Impacto nos grupos
 
-**Contras:**
-- Container adicional (~150 MB)
-- AMQP tem curva de aprendizado inicial
-
----
-
-### Opção C — Apache Kafka
-
-**Prós:**
-- Padrão da indústria para event streaming
-- Alta durabilidade e replayability de eventos (relevante para audit log)
-
-**Contras:**
-- Operacionalmente pesado (requer ZooKeeper ou KRaft)
-- Excessivo para a escala do projeto (5 grupos)
-
-## Decisão pendente
-
-O subgrupo core deve deliberar e fechar esta decisão **até 18/04/2026**.
-
-Para forçar consenso: votação simples entre os representantes. Em caso de empate, escalar ao Prof. Damaso com label `needs-senior-architect`.
-
-## Impacto após decisão
-
-1. Atualizar `broker/config/topics.yaml` com a tecnologia escolhida
-2. Atualizar `infra/docker-compose.core.yml` (substituir Redis pelo broker definitivo se diferente)
-3. Comunicar os grupos com **mínimo 48h de antecedência** antes de exigir integração
-4. Criar issue com label `groups:needs-migration`
+- Grupos **não precisam consumir RabbitMQ diretamente** para participar do leilão — o Core usa callbacks HTTP
+- A fila `ridefleet.groups.ride_created` está disponível para observabilidade/logging se o grupo quiser assinar
+- Credenciais padrão: `ridefleet` / `ridefleet`; management UI em `:15672`

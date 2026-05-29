@@ -18,6 +18,19 @@ O core é o **intermediário ativo** de toda comunicação entre os serviços de
 - **Manter a stack de observabilidade** (Prometheus + Grafana)
 - **Executar testes de contrato** no CI para verificar conformidade de cada serviço
 
+### Escopo do Core — o que está implementado
+
+| Primitiva | Status | Detalhes |
+|-----------|--------|----------|
+| Relógio lógico de Lamport | Implementado | Singleton thread-safe; aplica `max(local, recebido) + 1` em todos os eventos |
+| Locks distribuídos com TTL | Implementado | Por corrida; monitor detecta expiração a cada 5s e dispara compensação |
+| Saga pattern + compensação | Implementado | 7 estados; lock monitor + auction worker orquestram o re-leilão automático |
+| Circuit breaker por grupo | Implementado | Threshold: 2 falhas; recovery: 20s; retorna 503 quando OPEN |
+| Leilão scatter-gather | Implementado | Core chama grupos via HTTP (`POST /rides/incoming`) em paralelo |
+| Broker RabbitMQ | Implementado | Exchange topic `ridefleet.core.events`; 8 filas declaradas na inicialização |
+
+> **Fora de escopo nesta versão:** vetor de relógios e algoritmos de consenso (Raft/Paxos). O relógio de Lamport é suficiente para a ordenação causal exigida no cronograma das semanas 1–6.
+
 ---
 
 ## Stack implementada
@@ -80,16 +93,25 @@ make health     # Verifica o endpoint /api/v1/health
 ## Versão atual da API
 
 - **Spec:** [`spec/api/openapi.yaml`](spec/api/openapi.yaml)
-- **Versão:** v0.4.0
+- **Versão:** v0.4.1
 - **Status:** Em desenvolvimento ativo
 
 ### Endpoints implementados
 
 | Método | Rota | Autenticação | Descrição |
 |--------|------|-------------|-----------|
-| `POST` | `/api/v1/groups/register` | Nenhuma | Registrar grupo e obter API Key |
+| `POST` | `/api/v1/groups/register` | Nenhuma | Registrar grupo e obter API Key (idempotente) |
 | `GET` | `/api/v1/groups/register` | `X-API-Key` | Listar grupos registrados |
+| `POST` | `/api/v1/rides` | `X-API-Key` | Criar corrida e iniciar leilão (202 Accepted) |
+| `GET` | `/api/v1/rides` | `X-API-Key` | Listar corridas com filtros (estado, origem, atribuído) |
+| `GET` | `/api/v1/rides/{rideUuid}/status` | `X-API-Key` | Consultar estado atual da saga + lock |
+| `PATCH` | `/api/v1/rides/{rideUuid}/status` | `X-API-Key` | Transição de estado (valida saga, idempotente) |
+| `GET` | `/api/v1/rides/{rideUuid}/proposals` | `X-API-Key` | Resultado do leilão (propostas + vencedor) |
+| `GET` | `/api/v1/rides/{rideUuid}/audit` | `X-API-Key` | Log causal completo (eventos + timestamps Lamport) |
+| `POST` | `/api/v1/locks/{rideUuid}` | `X-API-Key` | Adquirir/renovar lock distribuído com TTL |
+| `DELETE` | `/api/v1/locks/{rideUuid}` | `X-API-Key` | Liberar lock (somente o detentor) |
 | `GET` | `/api/v1/health` | Nenhuma | Health check do core |
+| `GET` | `/metrics` | Nenhuma | Métricas Prometheus |
 
 ---
 
@@ -97,17 +119,18 @@ make health     # Verifica o endpoint /api/v1/health
 
 Exchange topic `ridefleet.core.events`. Filas criadas automaticamente na inicialização do core:
 
-| Fila | Routing Key | Descrição |
-|------|-------------|-----------|
-| `ridefleet.groups.ride_created` | `ride_created` | Nova corrida disponível para leilão |
-| `ridefleet.proposals` | `proposal_submitted` | Proposta registrada |
-| `ridefleet.groups.status` | `ride_status_changed` | Transição de estado da saga |
-| `ridefleet.locks` | `lock_event` | Eventos de aquisição/liberação de lock |
-| `ridefleet.compensations` | `compensation_triggered` | Compensação iniciada |
-| `ridefleet.audit` | `#` | Auditoria (todos os eventos) |
-| `ridefleet.observability` | `#` | Observabilidade (todos os eventos) |
+| Fila | Routing Key | Assinantes | Descrição |
+|------|-------------|-----------|-----------|
+| `ridefleet.groups.ride_created` | `ride_created` | Todos os grupos | Nova corrida disponível para leilão |
+| `ridefleet.proposals` | `proposal_submitted` | Serviço de origem | Proposta registrada |
+| `ridefleet.groups.status` | `ride_status_changed` | Todos os grupos | Transição de estado da saga |
+| `ridefleet.locks` | `lock_event` | Interno / observabilidade | Eventos de aquisição/liberação/expiração de lock |
+| `ridefleet.compensations` | `compensation_triggered` | Grupo atribuído + origem | Compensação iniciada |
+| `ridefleet.auction.requests` | `auction_request` | Auction Worker (interno) | Dispara execução de leilão |
+| `ridefleet.audit` | `#` | Auditoria | Captura todos os eventos |
+| `ridefleet.observability` | `#` | Observabilidade | Captura todos os eventos |
 
-Ver [`broker/config/topics.yaml`](broker/config/topics.yaml) para o contrato completo de cada tópico.
+Ver [`broker/README.md`](broker/README.md) para detalhes de cada fila.
 
 ---
 
@@ -133,14 +156,20 @@ Ver [`broker/config/topics.yaml`](broker/config/topics.yaml) para o contrato com
 
 ```
 ridefleet-core/
-├── app/            ← Serviço Python/FastAPI (core, controllers, models, services)
-├── spec/           ← Contrato de integração (API, schemas, saga)
-├── conformance/    ← Lock manager, saga coordinator, testes de contrato
+├── app/
+│   ├── controllers/    ← Rotas FastAPI (rides, locks, auth, health)
+│   ├── core/           ← Primitivas SD: LamportClock, CircuitBreaker, métricas
+│   ├── models/         ← Modelos SQLAlchemy (Ride, RideLock, Proposal, Group, AuditEvent)
+│   ├── repositories/   ← Camada de acesso ao banco de dados
+│   ├── services/       ← Lógica de negócio (RideService, StateMachineService)
+│   ├── workers/        ← Background tasks: auction_worker, lock_monitor
+│   └── tests/          ← Suíte de testes (pytest + httpx)
+├── spec/           ← Contrato de integração (OpenAPI, schemas JSON, saga)
 ├── broker/         ← Configuração de tópicos e exchange RabbitMQ
 ├── bruno/          ← Coleção de requisições para testes manuais da API
-├── observability/  ← Prometheus + Grafana
-├── infra/          ← Docker Compose (core.yml + dev.yml)
-├── docs/           ← ADRs, onboarding, documentação
+├── observability/  ← Prometheus + Grafana (dashboards provisionados)
+├── infra/          ← Docker Compose (core.yml + dev.yml) + .env.example
+├── docs/           ← Tutorial de integração, fluxo de delegação, ADRs
 └── Makefile        ← Atalhos para desenvolvimento e operação
 ```
 
@@ -151,9 +180,10 @@ ridefleet-core/
 | Data-limite | Entregável | Status |
 |-------------|-----------|--------|
 | **18/04/2026** | Spec da API v0.1.0 aprovada + ADRs | ✅ Concluído |
-| **16/05/2026** | Testes de contrato no CI | 🔄 Em andamento |
-| **30/05/2026** | Dashboards Grafana com dados reais | ⏳ Pendente |
-| **13/06/2026** | Todos os testes de contrato passando | ⏳ Pendente |
+| **16/05/2026** | Testes de contrato no CI | ✅ Concluído |
+| **28/05/2026** | API v0.4.1 — idempotência no registro de grupos | ✅ Concluído |
+| **30/05/2026** | Integração local dos grupos (Semana 3) | 🔄 Em andamento |
+| **13/06/2026** | Dashboards Grafana + todos os testes de contrato passando | ⏳ Pendente |
 
 ---
 

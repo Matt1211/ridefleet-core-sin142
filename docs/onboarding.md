@@ -1,158 +1,296 @@
-# Guia de Onboarding para Grupos — RideFleet Core
+# Tutorial de Integração Local — RideFleet Core
 
-Bem-vindo ao ecossistema RideFleet! Este guia mostra o que seu grupo precisa fazer para integrar com o core.
-
----
-
-## 1. O que é o core?
-
-O core é o intermediário ativo entre todos os serviços. Ele:
-- Gerencia a máquina de estados de cada corrida (saga)
-- Arbitra locks distribuídos (evita duplicação de aceites)
-- Define e versiona o contrato de API que todos devem implementar
-- Mantém o log causal de auditoria com relógios de Lamport
-
-**Toda comunicação entre grupos passa pelo core.**
+Guia passo a passo para conectar seu serviço ao Core localmente (Semana 3).
 
 ---
 
-## 2. Quick Start
+## 1. Pré-requisitos
 
-### 2.1 Clonar e subir o core localmente
+- Docker Desktop em execução (≥ 4.x)
+- `curl` ou [Bruno](https://usebruno.com/) para chamadas HTTP
+- ~2 GB de RAM disponíveis
+- Repo `ridefleet-core` clonado
+
+---
+
+## 2. Subindo o Core localmente
 
 ```bash
-git clone <url-do-repositório-core>
-cd ridefleet-core
-
 # Copiar variáveis de ambiente
 cp infra/.env.example infra/.env
 
-# Subir core + Redis + Prometheus + Grafana
+# Subir core + PostgreSQL + RabbitMQ + Prometheus + Grafana
 docker compose -f infra/docker-compose.core.yml up -d
 
-# Verificar que o core está saudável
+# Aguardar inicialização (~15s) e verificar saúde
 curl http://localhost:8080/api/v1/health
-# Esperado: {"status": "ok", "version": "0.1.0", ...}
+# → {"status": "ok", "version": "0.4.1", ...}
 ```
 
-### 2.2 Explorar a API interativamente
+**Serviços disponíveis:**
 
-Acesse `http://localhost:8080/docs` para o Swagger UI com todos os endpoints.
+| Serviço | URL |
+|---------|-----|
+| Core API + Swagger | http://localhost:8080/docs |
+| RabbitMQ Management | http://localhost:15672 (ridefleet / ridefleet) |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 (admin / ridefleet) |
 
 ---
 
-## 3. Fluxo de delegação — passo a passo
+## 3. Registrando seu grupo
 
-### Cenário: Grupo A delega corrida para Grupo B
+O endpoint de registro é **idempotente** — pode ser chamado a cada reinício do container sem erro.
 
 ```bash
-# 1. Criar corrida (Grupo A solicita)
-curl -X POST http://localhost:8080/api/v1/rides \
+curl -s -X POST http://localhost:8080/api/v1/groups/register \
   -H "Content-Type: application/json" \
   -d '{
-    "originServiceId": "group-a",
-    "passengerId": "passenger-1",
-    "origin": {"lat": -20.75, "lng": -42.88},
-    "destination": {"lat": -20.80, "lng": -42.90},
-    "logicalTimestamp": 1
-  }'
-# → {"rideId": "<uuid>", "logicalTimestamp": 2, "message": "..."}
+    "groupId":      "meu-grupo",
+    "groupName":    "Meu Grupo — SIN 142",
+    "serviceUrl":   "http://meu-servico:8080",
+    "contactEmail": "grupo@example.com"
+  }' | python3 -m json.tool
+```
 
-RIDE_ID="<uuid do passo anterior>"
+- **Primeiro registro:** retorna `201` com a `apiKey` gerada.
+- **Reregistro:** retorna `200` com a mesma `apiKey` (atualiza `serviceUrl` e `groupName`).
 
-# 2. Grupo B submete proposta (leilão)
-curl -X POST http://localhost:8080/api/v1/rides/$RIDE_ID/proposals \
-  -H "Content-Type: application/json" \
-  -d '{
-    "serviceId": "group-b",
-    "estimatedEta": 180,
-    "estimatedPrice": 15.50,
-    "logicalTimestamp": 3
-  }'
+Guarde a `apiKey` — use-a no header `X-API-Key` em todas as chamadas subsequentes ao Core.
 
-# 3. Core seleciona vencedor → transição para "match"
-curl -X PATCH http://localhost:8080/api/v1/rides/$RIDE_ID/status \
-  -H "Content-Type: application/json" \
-  -d '{
-    "newState": "match",
-    "serviceId": "group-a",
-    "logicalTimestamp": 5
-  }'
-
-# 4. Grupo B adquire lock para confirmar
-curl -X POST http://localhost:8080/api/v1/locks/$RIDE_ID \
-  -H "Content-Type: application/json" \
-  -d '{"serviceId": "group-b", "ttlSeconds": 30}'
-
-# 5. Grupo B confirma → transição para "confirm"
-curl -X PATCH http://localhost:8080/api/v1/rides/$RIDE_ID/status \
-  -H "Content-Type: application/json" \
-  -d '{
-    "newState": "confirm",
-    "serviceId": "group-b",
-    "logicalTimestamp": 7
-  }'
-
-# 6. Consultar log causal
-curl http://localhost:8080/api/v1/rides/$RIDE_ID/audit
+```bash
+API_KEY="rfk_<sua chave aqui>"
 ```
 
 ---
 
-## 4. Requisitos que seu serviço deve implementar
+## 4. Visão geral do fluxo de integração
 
-### 4.1 Expor endpoint de métricas Prometheus
+Antes de executar o passo a passo, entenda **quem chama quem**:
 
+```mermaid
+sequenceDiagram
+    participant S as Seu Serviço (origem)
+    participant C as Core (API)
+    participant AW as Auction Worker
+    participant RMQ as RabbitMQ
+    participant SB as Serviços Parceiros
+
+    S->>C: POST /api/v1/rides (cria corrida)
+    C->>RMQ: publica auction_request
+    C-->>S: 202 Accepted {rideUuid}
+
+    RMQ->>AW: consome auction_request
+    AW->>RMQ: publica ride_created
+    AW->>SB: POST /rides/incoming (scatter HTTP)
+    SB-->>AW: 200 {estimatedEta, estimatedPrice} ou 204 (passa)
+    Note over AW: Seleciona vencedor<br/>(menor preço → menor ETA)
+    AW->>RMQ: publica ride_status_changed (match)
+    AW->>SB: POST /rides/{uuid}/assigned (notifica vencedor)
+
+    SB->>C: POST /api/v1/locks/{uuid} (TTL 60s)
+    C-->>SB: 200 {lockExpiresAt}
+    SB->>C: PATCH /status → confirm
+    SB->>C: PATCH /status → in_transit
+    SB->>C: PATCH /status → complete
+    C->>C: libera lock automaticamente
 ```
-GET /metrics
-Content-Type: text/plain
 
-# Métricas mínimas obrigatórias:
-ridefleet_locks_acquired_total{service="group-X"}
-ridefleet_circuit_breaker_state{service="group-X", partner="group-Y"}
-ridefleet_rides_delegated_total{service="group-X"}
-ridefleet_rides_local_total{service="group-X"}
-```
-
-### 4.2 Implementar relógio lógico de Lamport
-
-Todo evento significativo deve incluir `logicalTimestamp` seguindo as regras:
-- Ao enviar: inclua seu clock atual
-- Ao receber: `clock = max(local_clock, received_timestamp) + 1`
-
-### 4.3 Containerizar com Docker
-
-Seu serviço deve ter um `Dockerfile` funcional. O core usará sua imagem no `docker-compose.yml` completo.
-
-### 4.4 Variável de ambiente `CORE_URL`
-
-Seu serviço deve ler a URL do core de `CORE_URL` (padrão: `http://core:8080/api/v1`).
+**Ponto crítico:** o Core chama seu serviço em `POST /rides/incoming` durante o leilão — seu serviço deve implementar este endpoint e responder de forma síncrona com a proposta. Não existe um endpoint no Core para submeter propostas diretamente.
 
 ---
 
-## 5. Rodando seu serviço junto com o Core (demo individual)
+## 5. Endpoints que seu serviço deve implementar
 
-Esta seção guia o grupo que quer rodar o Core + o próprio serviço na **mesma máquina**, integrados pela rede Docker, para a demo individual.
+O Core realiza callbacks HTTP para o `serviceUrl` que você registrou:
 
-### Pré-requisitos
+### `POST /rides/incoming`
 
-- Docker Desktop em execução.
-- Repo `ridefleet-core` clonado localmente.
-- Seu serviço tem um `Dockerfile` funcional e expõe:
-  - `GET /health` — health check
-  - `POST /rides/incoming` — recebe oferta de leilão do core
-  - `POST /rides/{rideUuid}/assigned` — recebe notificação de vitória no leilão
+Recebe uma oferta de leilão. Responda com sua proposta ou recuse.
 
-### Passo 1 — Configurar o bloco do seu serviço no compose
+**Request body (enviado pelo Core):**
+```json
+{
+  "rideUuid": "uuid-da-corrida",
+  "origin": {"lat": -20.75, "lng": -42.88, "street": "Rua A", "number": "1", "city": "Viçosa", "state": "MG"},
+  "destination": {"lat": -20.80, "lng": -42.90, "street": "Rua B", "number": "2", "city": "Viçosa", "state": "MG"},
+  "originServiceId": "grupo-origem",
+  "passengerId": "uuid-passageiro",
+  "logicalTimestamp": 5,
+  "auctionDeadline": "2026-05-29T14:05:00Z"
+}
+```
 
-Edite `infra/docker-compose.yml` e descomente o bloco `meu-servico`:
+**Respostas esperadas:**
+- `200 OK` com `{"estimatedEta": 180, "estimatedPrice": 15.50, "logicalTimestamp": 6}` — aceita e faz proposta
+- `204 No Content` — recusa (passa o leilão)
+
+### `POST /rides/{rideUuid}/assigned`
+
+Recebe notificação de que seu grupo ganhou o leilão.
+
+**Request body (enviado pelo Core):**
+```json
+{
+  "rideUuid": "uuid-da-corrida",
+  "origin": {...},
+  "destination": {...},
+  "passengerId": "uuid-passageiro",
+  "originServiceId": "grupo-origem",
+  "logicalTimestamp": 8,
+  "lockExpiresAt": "2026-05-29T14:06:00Z"
+}
+```
+
+O Core já transferiu o lock para o seu grupo. A partir daqui, seu serviço deve chamar o Core para progredir a saga.
+
+---
+
+## 6. Fluxo completo — passo a passo com curl
+
+### Passo 1 — Criar corrida e iniciar leilão
+
+```bash
+RIDE=$(curl -s -X POST http://localhost:8080/api/v1/rides \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "originServiceId":      "meu-grupo",
+    "passengerId":          "passageiro-demo",
+    "origin":      {"lat": -20.75, "lng": -42.88, "street": "Rua A", "number": "1", "city": "Viçosa", "state": "MG"},
+    "destination": {"lat": -20.80, "lng": -42.90, "street": "Rua B", "number": "2", "city": "Viçosa", "state": "MG"},
+    "logicalTimestamp":     1,
+    "auctionTimeoutSeconds": 10
+  }')
+
+RIDE_UUID=$(echo $RIDE | python3 -c "import sys,json; print(json.load(sys.stdin)['rideUuid'])")
+echo "Corrida criada: $RIDE_UUID"
+```
+
+O Core:
+1. Registra a corrida no estado `request`
+2. Adquire o lock inicial em nome do seu grupo
+3. Publica `auction_request` no RabbitMQ
+4. Retorna `202 Accepted` imediatamente — o leilão roda em background
+
+### Passo 2 — Aguardar o leilão e verificar resultado
+
+```bash
+# Aguardar o timeout do leilão (auctionTimeoutSeconds = 10s)
+sleep 12
+
+# Verificar estado e resultado
+curl -s http://localhost:8080/api/v1/rides/$RIDE_UUID/status \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+
+curl -s http://localhost:8080/api/v1/rides/$RIDE_UUID/proposals \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+```
+
+Se nenhum grupo respondeu ao `POST /rides/incoming`, o Core cancela a corrida (`cancelled`). Na demo individual, seu serviço precisa estar no ar e registrado para receber o callback.
+
+### Passo 3 — (Após receber `/rides/{uuid}/assigned`) Adquirir lock como vencedor
+
+Se seu serviço recebeu o callback de vitória, o lock já está no seu grupo. Confirme adquirindo/renovando:
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/locks/$RIDE_UUID \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "serviceId":  "meu-grupo",
+    "ttlSeconds": 60
+  }' | python3 -m json.tool
+# → 200 OK {locked: true, heldBy: "meu-grupo", expiresAt: "..."}
+# → 409 Conflict se outro grupo detém o lock
+```
+
+### Passo 4 — Progredir a saga (confirm → in_transit → complete)
+
+Cada transição requer:
+- `serviceId`: seu ID de grupo
+- `logicalTimestamp`: maior que o último enviado para esta corrida
+- Lock ativo no seu grupo (para `confirm`, `in_transit` e `complete`)
+
+```bash
+# confirm
+curl -s -X PATCH http://localhost:8080/api/v1/rides/$RIDE_UUID/status \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"newState": "confirm", "serviceId": "meu-grupo", "logicalTimestamp": 10}' \
+  | python3 -m json.tool
+
+# in_transit
+curl -s -X PATCH http://localhost:8080/api/v1/rides/$RIDE_UUID/status \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"newState": "in_transit", "serviceId": "meu-grupo", "logicalTimestamp": 12}' \
+  | python3 -m json.tool
+
+# complete
+curl -s -X PATCH http://localhost:8080/api/v1/rides/$RIDE_UUID/status \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"newState": "complete", "serviceId": "meu-grupo", "logicalTimestamp": 14}' \
+  | python3 -m json.tool
+```
+
+Ao atingir `complete`, o Core libera o lock automaticamente.
+
+### Passo 5 — Verificar o log causal
+
+```bash
+curl -s http://localhost:8080/api/v1/rides/$RIDE_UUID/audit \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+```
+
+Você deve ver os eventos em ordem crescente de `logicalTimestamp`:
+`ride_created → auction_closed → lock_acquired → state_transition (match) → state_transition (confirm) → state_transition (in_transit) → state_transition (complete)`
+
+---
+
+## 7. Simulando uma falha — compensação automática
+
+Para observar o ciclo de compensação, adquira o lock e **não faça nenhuma transição** até o TTL expirar:
+
+```bash
+# Criar nova corrida e aguardar o leilão (seu serviço deve ganhar)
+# Após receber /rides/{uuid}/assigned, adquira o lock mas não progrida:
+curl -s -X POST http://localhost:8080/api/v1/locks/$RIDE_UUID \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"serviceId": "meu-grupo", "ttlSeconds": 15}'
+
+# Aguardar o TTL expirar (15s + margem do monitor a cada 5s)
+sleep 25
+
+# Verificar o log causal — deve conter lock_expired + state_transition (compensating)
+curl -s http://localhost:8080/api/v1/rides/$RIDE_UUID/audit \
+  -H "X-API-Key: $API_KEY" | python3 -m json.tool
+```
+
+O que o Core faz automaticamente:
+1. `lock_monitor` detecta o lock expirado (verifica a cada 5s)
+2. Incrementa o circuit breaker do seu grupo (threshold: 2 falhas → OPEN por 20s)
+3. Registra `lock_expired` no log de auditoria
+4. Transiciona a corrida para `compensating`
+5. Publica novo `auction_request` **excluindo seu grupo**
+6. O leilão recomeça com os demais grupos
+
+---
+
+## 8. Rodando seu serviço junto com o Core (demo integrada)
+
+### Passo 1 — Configurar o bloco do seu serviço no Compose
+
+Edite `infra/docker-compose.yml` e adicione o bloco do seu serviço:
 
 ```yaml
 services:
 
   meu-servico:
     build:
-      context: ../meu-servico   # path relativo ao repo do seu grupo
+      context: ../meu-servico   # path relativo ao repositório do seu grupo
       dockerfile: Dockerfile
     container_name: ridefleet-meu-servico
     ports:
@@ -167,7 +305,7 @@ services:
       - ridefleet-net
 ```
 
-> O nome `meu-servico` (container_name) é o hostname que o core usará para callbacks — garanta que seu `serviceUrl` no registro bata com esse nome.
+> O `container_name` é o hostname dentro da rede Docker. O `serviceUrl` que você registrar no Core deve bater com esse hostname: `http://ridefleet-meu-servico:8080`.
 
 ### Passo 2 — Subir tudo
 
@@ -175,95 +313,99 @@ services:
 docker compose -f infra/docker-compose.yml up -d
 ```
 
-Aguarde o health check do core:
+### Passo 3 — Auto-registro no boot
 
-```bash
-curl http://localhost:8080/api/v1/health
-# → {"status": "ok", "version": "..."}
-```
-
-### Passo 3 — Registrar seu serviço no core (auto-registro no boot)
-
-O endpoint `/groups/register` é **idempotente**: pode ser chamado a cada reinício do container sem erro. Inclua este registro no script de startup do seu serviço:
+Inclua este trecho no script de startup do seu serviço (execute após o health check do Core passar):
 
 ```bash
 curl -s -X POST http://core:8080/api/v1/groups/register \
   -H "Content-Type: application/json" \
   -d '{
-    "groupId":   "meu-grupo",
-    "groupName": "Meu Grupo — SIN 142",
-    "serviceUrl": "http://meu-servico:8080"
+    "groupId":    "meu-grupo",
+    "groupName":  "Meu Grupo — SIN 142",
+    "serviceUrl": "http://ridefleet-meu-servico:8080"
   }'
-# Primeiro boot  → 201 + apiKey
-# Boots seguintes → 200 + mesma apiKey (serviceUrl atualizado)
 ```
 
-> Guarde a `apiKey` retornada — use-a no header `X-API-Key` em todas as chamadas ao core.
+---
 
-### Passo 4 — Disparar uma corrida e validar o fluxo
+## 9. Requisitos que seu serviço deve implementar
 
-```bash
-API_KEY="rfk_<sua chave>"
+### 9.1 Relógio lógico de Lamport
 
-# 1. Solicitar corrida (delegação de saída)
-RIDE=$(curl -s -X POST http://localhost:8080/api/v1/rides \
-  -H "X-API-Key: $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "originServiceId": "meu-grupo",
-    "passengerId": "passageiro-1",
-    "origin":      {"lat": -20.75, "lng": -42.88, "street": "Rua A", "number": "1", "city": "Viçosa", "state": "MG"},
-    "destination": {"lat": -20.80, "lng": -42.90, "street": "Rua B", "number": "2", "city": "Viçosa", "state": "MG"},
-    "logicalTimestamp": 1,
-    "auctionTimeoutSeconds": 10
-  }')
-RIDE_UUID=$(echo $RIDE | python3 -c "import sys,json; print(json.load(sys.stdin)['rideUuid'])")
-echo "Corrida criada: $RIDE_UUID"
+Todo evento deve incluir `logicalTimestamp`. Regras:
+- Ao enviar: use seu clock atual
+- Ao receber resposta do Core: `clock = max(local_clock, response_timestamp) + 1`
+- Nunca reutilize um timestamp já enviado para a mesma corrida
 
-# 2. Aguardar o leilão (10s) e consultar status
-sleep 12
-curl -s http://localhost:8080/api/v1/rides/$RIDE_UUID/status \
-  -H "X-API-Key: $API_KEY"
+### 9.2 Endpoint de métricas Prometheus
 
-# 3. Consultar o log causal
-curl -s http://localhost:8080/api/v1/rides/$RIDE_UUID/audit \
-  -H "X-API-Key: $API_KEY"
+```
+GET /metrics
+Content-Type: text/plain
 ```
 
-Seu serviço deve ter recebido `POST /rides/incoming` durante o leilão e, se vencedor, `POST /rides/{uuid}/assigned`.
+Métricas mínimas obrigatórias (labels conforme o Core):
 
-### Passo 5 — Troubleshooting
+```
+ridefleet_locks_acquired_total{service="meu-grupo"}
+ridefleet_locks_expired_total{service="meu-grupo"}
+ridefleet_saga_transitions_total{from_state="confirm", to_state="in_transit", service="meu-grupo"}
+ridefleet_circuit_breaker_state{service="meu-grupo"}
+ridefleet_rides_delegated_total{service="meu-grupo"}
+ridefleet_rides_local_total{service="meu-grupo"}
+```
+
+### 9.3 Containerização
+
+Seu serviço deve ter um `Dockerfile` funcional e expor:
+- `GET /health` — health check
+- `POST /rides/incoming` — recebe oferta de leilão
+- `POST /rides/{rideUuid}/assigned` — recebe notificação de vitória
+- `GET /metrics` — métricas Prometheus
+
+### 9.4 Variável de ambiente
+
+Seu serviço deve ler `CORE_URL` do ambiente (padrão sugerido: `http://core:8080/api/v1`).
+
+---
+
+## 10. Troubleshooting
 
 | Sintoma | Causa provável | Solução |
 |---------|---------------|---------|
-| Core não chama `/rides/incoming` | `serviceUrl` registrado não bate com hostname na `ridefleet-net` | Registre novamente com `serviceUrl: "http://meu-servico:8080"` |
-| `docker compose up` falha no build | Path do `context` incorreto | Verifique o path relativo em `infra/docker-compose.yml` |
-| Re-registro retorna 500 | Container do core ainda inicializando | Aguarde o health check do core antes de chamar `/groups/register` |
-| Leilão fecha sem propostas — corrida cancelada | Nenhum outro grupo registrado ou todos passaram | Normal na demo individual; o próprio grupo pode ser o único participante |
-
-### Adicionar ao compose do core (integração multi-grupo — Semana 6)
-
-Quando o professor subir o ambiente centralizado, abra uma PR com o bloco do seu grupo em `infra/docker-compose.yml` na branch `feat/add-group-X-compose`.
-
----
-
-## 6. Comunicação e suporte
-
-- **Dúvidas sobre a spec:** abra uma Issue com template `Proposta de Mudança na API`
-- **Bug no core:** abra uma Issue com template `Bug Report`
-- **Mudança breaking na API:** prazo mínimo de 48h de comunicação antes de exigir migração
-- **Decisão não resolvida no core:** escalar ao Prof. Damaso via issue com label `needs-senior-architect`
+| `401 Unauthorized` em qualquer chamada | Header `X-API-Key` ausente ou chave errada | Registre o grupo novamente e use a `apiKey` retornada |
+| `503 Service Unavailable` ao fazer transição | Circuit breaker do seu grupo está OPEN (2+ falhas de lock) | Aguardar 20s (recovery timeout) e tentar novamente |
+| `409 Conflict` ao adquirir lock | Outro grupo detém o lock | Consultar `GET /rides/{uuid}/status` para ver quem detém; aguardar expiração ou liberação |
+| `422 Unprocessable Entity` na transição | Transição inválida para o estado atual ou `logicalTimestamp` menor/igual ao último | Verificar estado atual com `GET /status`; incrementar o timestamp |
+| Core não chama `POST /rides/incoming` | `serviceUrl` registrado não é acessível na rede Docker | Registre com `serviceUrl: "http://ridefleet-meu-servico:8080"` (hostname do container) |
+| Leilão encerra sem propostas — corrida cancelada | Nenhum grupo respondeu ao callback no `auctionTimeoutSeconds` | Normal na demo individual se o serviço não estava no ar; aumente o timeout ou verifique os logs |
+| `docker compose up` falha no build | Path do `context` incorreto em `infra/docker-compose.yml` | Verifique o path relativo ao repositório do Core |
 
 ---
 
-## 8. Checklist de integração
+## 11. Checklist — Semana 3
 
-- [ ] Core sobe localmente sem erros (`docker compose up -d`)
-- [ ] `GET /health` retorna `200`
-- [ ] Seu serviço sobe junto via `infra/docker-compose.yml` (bloco `meu-servico` configurado)
-- [ ] Auto-registro idempotente funciona no boot (200 ou 201 sem erro)
-- [ ] Core chama `POST /rides/incoming` no seu serviço durante o leilão
-- [ ] Fluxo básico (criar corrida → leilão → match → confirm) funciona end-to-end
-- [ ] Seu serviço expõe `GET /metrics` no formato Prometheus
-- [ ] Seu serviço lê `CORE_URL` do ambiente
-- [ ] Seu serviço tem `Dockerfile` funcional
+- [ ] Core sobe sem erros (`docker compose up -d`) e `GET /health` retorna `200`
+- [ ] Meu grupo está registrado — `GET /api/v1/groups/register` lista meu `groupId`
+- [ ] Auto-registro idempotente funciona (200 ou 201 sem erro nos reinícios)
+- [ ] Meu serviço está na `ridefleet-net` e o Core consegue chamar `POST /rides/incoming`
+- [ ] Consigo criar uma corrida (`POST /rides`) e ver `rideUuid` na resposta
+- [ ] Meu serviço responde ao `POST /rides/incoming` com proposta (200 + ETA/preço)
+- [ ] Meu serviço recebe `POST /rides/{uuid}/assigned` quando vence o leilão
+- [ ] Consigo adquirir lock (`POST /locks/{uuid}`) após ser declarado vencedor
+- [ ] Consigo fazer as transições `confirm → in_transit → complete` com lock ativo
+- [ ] `GET /rides/{uuid}/audit` mostra todos os eventos em ordem de `logicalTimestamp`
+- [ ] `GET /metrics` do meu serviço retorna métricas no formato Prometheus
+
+---
+
+## Próximos passos
+
+- **Semanas 4–5:** Observabilidade avançada, CI/CD, front-end
+- **Semana 6:** Integração multi-grupo — abrir PR com seu bloco em `infra/docker-compose.yml` na branch `feat/add-group-X-compose`
+
+**Dúvidas:**
+- Bug no Core → Issue com template `Bug Report`
+- Mudança na spec → Issue com template `Proposta de Mudança na API`
+- Questão arquitetural → Issue com label `needs-senior-architect`
