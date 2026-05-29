@@ -61,7 +61,12 @@ Toda mudança de spec que afete os grupos deve ser comunicada com **antecedênci
 | Luana Amie | luanaamie@gmail.com | Integração RabbitMQ (ambiente), Documentação |
 | Gabriel Rodrigues | @GabrielRodrigues22 | Integração RabbitMQ (endpoints FastAPI) |
 | John Kauan | @johnkauan | Configuração de exchanges e filas (broker) |
-| Phelipe Romano Magalhães Rosa | phromanomr@gmail.com | Implementação do Circuit Breaker por Parceiro |
+| Phelipe Romano Magalhães Rosa | phromanomr@gmail.com | Circuit Breaker por grupo, endpoint `/metrics` |
+| Arcanjo Gabriel | arcanjog544@gmail.com | Relógio de Lamport, integração nos workers |
+| Rafael Carvalho | @rapah10000 | Implementação do sistema de leilão (auction worker) |
+| Arthur Neto | @ArthurNeto | Enforcer de transições de estado, publicação de eventos |
+| Mariana Castro | mariana.d.castro@ufv.br | Métricas Prometheus, máquina de estados |
+| Jose Guedes de Carvalho Godoi | jose.godoi@ufv.br | Modelo de dados de corridas, repositório |
 
 ### Detalhamento por membro
 
@@ -91,8 +96,29 @@ Toda mudança de spec que afete os grupos deve ser comunicada com **antecedênci
 - Setup inicial do broker para os tópicos do ecossistema RideFleet
 
 **Phelipe Romano Magalhães Rosa**
-- Implementação da classe CircuitBreaker e CircuitBreakerManager.
-- Criação da instância de breaker por grupo registrado.
-- Integrar no fluxo de delegação/leilão: ignorar parceiros OPEN, testar os HALF-OPEN.
-- Expor métrica ridefleet_circuit_breaker_state rotulada por grupo .
-- Criação do endpoint `/metrics`
+- Implementação da classe `CircuitBreaker` e `CircuitBreakerManager` (`app/core/circuit_breaker_manager.py`)
+- Criação de instância de breaker por grupo registrado
+- Integração no fluxo de delegação/leilão: ignorar parceiros OPEN, testar HALF_OPEN
+- Exposição da métrica `ridefleet_circuit_breaker_state` rotulada por grupo
+- Criação do endpoint `/metrics` e integração com `prometheus_client`
+
+**Arcanjo Gabriel**
+- Implementação do relógio de Lamport thread-safe (`app/core/lamport_clock.py`): métodos `tick()` e `update()`, proteção contra saltos excessivos (`MAX_CLOCK_JUMP`)
+- Integração do clock nos workers de leilão e métricas (`ridefleet_logical_timestamp`)
+
+**Rafael Carvalho**
+- Implementação do sistema de leilão de corridas (`app/workers/auction_worker.py`): lógica de scatter-gather HTTP, critério de seleção de vencedor (preço → ETA → group\_id), transferência de lock ao vencedor e chamada de `POST /rides/{uuid}/assigned`
+
+**Arthur Neto**
+- Implementação do enforcer de transições de estado da saga (`app/services/ride_service.py`): validação de transições via `_TRANSICOES_VALIDAS`, publicação de `ride_status_changed` no broker
+- Integração do enforcement no `auction_worker` e no `lock_monitor` para transições internas (match, compensating)
+- Criação dos testes de contrato de transição (`app/tests/tests_ride_status.py`)
+
+**Mariana Castro**
+- Implementação dos endpoints de métricas Prometheus (`app/core/metrics.py`): contadores de saga, locks, delegação e corridas locais com labels padronizados
+- Contribuição na máquina de estados (`app/services/state_machine_service.py`): definição de `_REQUER_LOCK` e refinamento das transições válidas
+- Ajustes no `lock_monitor` para emissão correta de métricas de expiração
+
+**Jose Guedes de Carvalho Godoi**
+- Implementação do modelo ORM de corridas (`app/models/ride.py`) com todos os campos da saga
+- Criação do repositório de corridas (`app/repositories/ride_repository.py`) e integração inicial no `ride_service`
