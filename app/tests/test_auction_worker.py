@@ -18,7 +18,7 @@ Cobre:
 
 import pytest
 import pytest_asyncio
-from unittest.mock import AsyncMock, patch, call
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import AsyncSession
 

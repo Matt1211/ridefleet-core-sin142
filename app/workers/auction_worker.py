@@ -32,7 +32,6 @@ from app.models.ride import AuctionStatus, Ride, RideStatus
 from app.models.ride_audit_event import RideAuditEvent
 from app.models.ride_proposal import RideProposal
 from app.rabbitmq import rabbitmq_broker
-from app.repositories.audit_repository import AuditRepository
 from app.repositories.group_repository import GroupRepository
 from app.repositories.lock_repository import LockRepository
 from app.repositories.proposal_repository import ProposalRepository
@@ -87,7 +86,6 @@ async def _executar_leilao(
     async with AsyncSessionLocal() as db:
         ride_repo = RideRepository(db)
         lock_repo = LockRepository(db)
-        audit_repo = AuditRepository(db)
         proposal_repo = ProposalRepository(db)
         group_repo = GroupRepository(db)
 

@@ -10,7 +10,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.ride import Ride, RideStatus
+from app.models.ride import Ride
 
 
 class RideRepository:
