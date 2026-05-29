@@ -2,43 +2,49 @@
 
 Configuração dos tópicos pub/sub do ecossistema RideFleet.
 
-## Status
-
-Broker implementado com RabbitMQ.
-
-O RabbitMQ é usado como broker pub/sub do Core RideFleet. O core publica eventos padronizados em uma exchange do tipo topic chamada `ridefleet.core.events`.
-
 ## Exchange
 
 | Nome | Tipo | Descrição |
 |------|------|-----------|
-| `ridefleet.core.events` | topic | Exchange principal para eventos do core |
+| `ridefleet.core.events` | topic | Exchange principal para todos os eventos do Core |
 
-## Tópicos
+O Core declara a exchange e todas as filas automaticamente na inicialização (`app/rabbitmq.py`).
 
-| Tópico | Descrição |
-|--------|-----------|
-| `ride_created` | Nova corrida disponível para leilão |
-| `proposal_submitted` | Proposta registrada |
-| `ride_status_changed` | Transição de estado da saga |
-| `lock_event` | Eventos de aquisição/liberação de lock |
-| `compensation_triggered` | Compensação iniciada |
+## Filas e Routing Keys
 
-Ver `docs/adr/ADR-002-broker-pubsub.md` para as opções em discussão (Redis Streams, RabbitMQ, Kafka).
+| Fila | Routing Key | Publisher | Assinantes | Descrição |
+|------|-------------|-----------|-----------|-----------|
+| `ridefleet.groups.ride_created` | `ride_created` | Core | Todos os grupos | Nova corrida disponível; disparada pelo auction worker no início do leilão |
+| `ridefleet.proposals` | `proposal_submitted` | Core | Serviço de origem | Proposta registrada no leilão |
+| `ridefleet.groups.status` | `ride_status_changed` | Core | Todos os grupos | Transição de estado da saga (match, confirm, in_transit, complete, compensating) |
+| `ridefleet.locks` | `lock_event` | Core | Interno / observabilidade | Aquisição, liberação e expiração de locks |
+| `ridefleet.compensations` | `compensation_triggered` | Core | Grupo atribuído + grupo de origem | Compensação iniciada (lock expirado) |
+| `ridefleet.auction.requests` | `auction_request` | Core | Auction Worker (interno) | Dispara execução de leilão; consumido exclusivamente pelo worker interno |
+| `ridefleet.audit` | `#` | — | Auditoria | Captura todos os eventos (wildcard) |
+| `ridefleet.observability` | `#` | — | Observabilidade | Captura todos os eventos (wildcard) |
 
-## Tópicos definidos
+## Formato das Mensagens
 
-| Tópico | Publisher | Subscribers | Descrição |
-|--------|-----------|-------------|-----------|
-| `ride_created` | core | todos os grupos | Nova corrida disponível para leilão |
-| `proposal_submitted` | core | serviço de origem | Proposta registrada |
-| `ride_status_changed` | core | todos os grupos | Transição de estado da saga |
-| `lock_event` | core | interno/observabilidade | Eventos de lock (aquisição/liberação/expiração) |
-| `compensation_triggered` | core | serviço atribuído + origem | Compensação iniciada |
+Todas as mensagens publicadas pelo Core seguem o envelope padrão:
 
-## Configuração completa
+```json
+{
+  "eventType": "ride_created",
+  "rideId": "uuid-da-corrida",
+  "serviceId": "core",
+  "logicalTimestamp": 7,
+  "wallClockTime": "2026-05-29T14:00:00.000Z",
+  "payload": { ... }
+}
+```
 
-Após a decisão no ADR-002, este diretório receberá:
-- Configuração específica do broker escolhido
-- Script de criação de tópicos/exchanges/queues
-- Exemplo de cliente em Python para consumo dos tópicos
+## O que os grupos devem consumir
+
+Para integrar com o leilão, os grupos devem **implementar endpoints HTTP** — não consumir filas diretamente. O Core chama seu serviço via HTTP durante o leilão:
+
+- `POST /rides/incoming` — recebe oferta de leilão (Core chama durante o scatter)
+- `POST /rides/{uuid}/assigned` — recebe notificação de vitória
+
+A fila `ridefleet.groups.ride_created` é útil para observabilidade e logging, mas não substitui o callback HTTP para participar do leilão.
+
+Ver [`docs/onboarding.md`](../docs/onboarding.md) para o tutorial completo de integração.
