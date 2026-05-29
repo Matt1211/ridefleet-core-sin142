@@ -303,6 +303,11 @@ services:
         condition: service_healthy
     networks:
       - ridefleet-net
+
+networks:
+  ridefleet-net:
+    external: true
+    name: infra_ridefleet-net   # nome real criado pelo docker-compose.core.yml
 ```
 
 > O `container_name` é o hostname dentro da rede Docker. O `serviceUrl` que você registrar no Core deve bater com esse hostname: `http://ridefleet-meu-servico:8080`.
@@ -389,7 +394,7 @@ Seu serviço deve ler `CORE_URL` do ambiente (padrão sugerido: `http://core:808
 - [ ] Core sobe sem erros (`docker compose up -d`) e `GET /health` retorna `200`
 - [ ] Meu grupo está registrado — `GET /api/v1/groups/register` lista meu `groupId`
 - [ ] Auto-registro idempotente funciona (200 ou 201 sem erro nos reinícios)
-- [ ] Meu serviço está na `ridefleet-net` e o Core consegue chamar `POST /rides/incoming`
+- [ ] Meu serviço está na `infra_ridefleet-net` e o Core consegue chamar `POST /rides/incoming`
 - [ ] Consigo criar uma corrida (`POST /rides`) e ver `rideUuid` na resposta
 - [ ] Meu serviço responde ao `POST /rides/incoming` com proposta (200 + ETA/preço)
 - [ ] Meu serviço recebe `POST /rides/{uuid}/assigned` quando vence o leilão
