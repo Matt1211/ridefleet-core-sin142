@@ -1,19 +1,25 @@
-from datetime import datetime
-from typing import Optional
+import logging
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.circuit_breaker_manager import circuit_breaker_manager, RECOVERY_TIMEOUT
+from app.core.circuit_breaker_manager import RECOVERY_TIMEOUT, circuit_breaker_manager
 from app.core.security import verify_api_key
 from app.database import get_db
-from app.dtos.ride_request_dto import LockRequestDTO, LockReleaseRequestDTO, RideRequestDTO, RideStatusUpdateDTO
+from app.dtos.ride_request_dto import (
+    LockReleaseRequestDTO,
+    LockRequestDTO,
+    RideRequestDTO,
+    RideStatusUpdateDTO,
+)
 from app.dtos.ride_response_dto import (
     AuditLogDTO,
     AuctionResultDTO,
     LockConflictDTO,
     LockPunishmentDTO,
+    LockResponseDTO,
     RideAcceptedDTO,
     RideListDTO,
     RideStatusDTO,
@@ -26,10 +32,17 @@ from app.repositories.proposal_repository import ProposalRepository
 from app.repositories.ride_repository import RideRepository
 from app.services.ride_service import RideService
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/rides", tags=["rides"])
 
 
-def _criar_servico(db: AsyncSession = Depends(get_db)) -> RideService:
+# ---------------------------------------------------------------------------
+# Dependências
+# ---------------------------------------------------------------------------
+
+
+def get_ride_service(db: AsyncSession = Depends(get_db)) -> RideService:
     """Monta o grafo de dependências: repositórios => serviço."""
     return RideService(
         ride_repo=RideRepository(db),
@@ -39,50 +52,93 @@ def _criar_servico(db: AsyncSession = Depends(get_db)) -> RideService:
         group_repo=GroupRepository(db),
     )
 
+
+# Aliases para injeção limpa nos handlers
+AuthGroup = Annotated[Group, Depends(verify_api_key)]
+Service = Annotated[RideService, Depends(get_ride_service)]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _verificar_circuit_breaker(service_id: str) -> JSONResponse | None:
+    """
+    Retorna JSONResponse 503 se o circuit breaker do serviço estiver aberto.
+    Retorna None se o serviço estiver disponível.
+
+    Centralizado aqui para evitar duplicação entre atualizar_status
+    e adquirir_lock.
+    """
+    breaker = circuit_breaker_manager.get_breaker(service_id)
+    if not breaker.check_state():
+        return JSONResponse(
+            status_code=503,
+            content=LockPunishmentDTO(
+                error="CIRCUIT_BREAKER_OPEN",
+                message=(
+                    f"O serviço {service_id} está temporariamente bloqueado "
+                    "devido a múltiplos timeouts e/ou falhas."
+                ),
+                service_id=service_id,
+                recovery_time=RECOVERY_TIMEOUT,
+            ).model_dump(mode="json"),
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Rotas — Corridas
+# ---------------------------------------------------------------------------
+
+
 @router.post(
-    "/rides",
-    status_code=202,
+    "",
     response_model=RideAcceptedDTO,
-    summary="Solicitar nova corrida (ou delegação)",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Criar corrida e iniciar leilão",
     operation_id="createRide",
-    tags=["rides"],
+    description=(
+        "Registra uma nova corrida em estado `request`, adquire o lock inicial "
+        "em nome do grupo solicitante e publica o evento `auction_request` no "
+        "RabbitMQ. Retorna imediatamente — o leilão roda em worker separado."
+    ),
 )
 async def criar_corrida(
-    dados: RideRequestDTO,
-    servico: RideService = Depends(_criar_servico),
-    grupo_autenticado: Group = Depends(verify_api_key),
+    body: RideRequestDTO,
+    grupo: AuthGroup,
+    service: Service,
 ) -> RideAcceptedDTO:
-    """
-    Registra a corrida em request, adquire lock e dispara o leilão
-    em paralelo. Retorna 202 imediatamente.
+    logger.info(
+        "POST /rides | group=%s passenger=%s",
+        grupo.group_id,
+        body.passengerId,
+    )
+    return await service.criar_corrida(body, grupo)
 
-    O grupo de origem é identificado pela API Key o campo originServiceId
-    no body é informativo e não é usado para lookup.
-    """
-    return await servico.criar_corrida(dados, grupo_autenticado)
 
 @router.get(
-    "/rides",
-    status_code=200,
+    "",
     response_model=RideListDTO,
+    status_code=status.HTTP_200_OK,
     summary="Listar corridas com filtros opcionais",
     operation_id="listRides",
-    tags=["rides"],
 )
 async def listar_corridas(
-    originServiceId: Optional[str] = Query(None, description="Filtra pelo grupo solicitante"),
-    assignedServiceId: Optional[str] = Query(None, description="Filtra pelo grupo atribuído"),
+    grupo: AuthGroup,
+    service: Service,
+    originServiceId: Optional[str] = Query(None, description="Filtrar por grupo de origem"),
+    assignedServiceId: Optional[str] = Query(None, description="Filtrar por grupo atribuído"),
     state: Optional[str] = Query(
         None,
-        description="Filtra pelo estado da saga",
+        description="Filtrar por estado da corrida",
         enum=["request", "match", "confirm", "in_transit", "complete", "compensating", "cancelled"],
     ),
-    limit: int = Query(50, ge=1, le=200, description="Máximo de resultados por página"),
-    offset: int = Query(0, ge=0, description="Índice do primeiro resultado (zero-indexed)"),
-    servico: RideService = Depends(_criar_servico),
-    _grupo_autenticado: Group = Depends(verify_api_key),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> RideListDTO:
-    return await servico.listar_corridas(
+    return await service.listar_corridas(
         origin_service_id=originServiceId,
         assigned_service_id=assignedServiceId,
         state=state,
@@ -90,156 +146,178 @@ async def listar_corridas(
         offset=offset,
     )
 
-@router.get(
-    "/rides/{rideUuid}/proposals",
-    status_code=200,
-    response_model=AuctionResultDTO,
-    summary="Consultar resultado do leilão (propostas coletadas pelo core)",
-    operation_id="getRideProposals",
-    tags=["rides"],
-)
-async def buscar_propostas(
-    rideUuid: str,
-    servico: RideService = Depends(_criar_servico),
-    _grupo_autenticado: Group = Depends(verify_api_key),
-) -> AuctionResultDTO:
-    return await servico.buscar_propostas(rideUuid)
 
 @router.get(
-    "/rides/{rideUuid}/status",
-    status_code=200,
+    "/{rideUuid}",
     response_model=RideStatusDTO,
+    status_code=status.HTTP_200_OK,
+    summary="Consultar status de uma corrida (alias REST)",
+    operation_id="getRideStatusAlias",
+    include_in_schema=False,  # evita duplicação no OpenAPI — usa /status como canônico
+)
+async def buscar_status_alias(
+    rideUuid: str,
+    grupo: AuthGroup,
+    service: Service,
+) -> RideStatusDTO:
+    return await service.buscar_status(rideUuid)
+
+
+@router.get(
+    "/{rideUuid}/status",
+    response_model=RideStatusDTO,
+    status_code=status.HTTP_200_OK,
     summary="Consultar estado atual da corrida",
     operation_id="getRideStatus",
-    tags=["rides"],
 )
 async def buscar_status(
     rideUuid: str,
-    servico: RideService = Depends(_criar_servico),
-    _grupo_autenticado: Group = Depends(verify_api_key),
+    grupo: AuthGroup,
+    service: Service,
 ) -> RideStatusDTO:
-    return await servico.buscar_status(rideUuid)
+    return await service.buscar_status(rideUuid)
+
 
 @router.patch(
-    "/rides/{rideUuid}/status",
-    status_code=200,
+    "/{rideUuid}/status",
     response_model=RideStatusDTO,
+    status_code=status.HTTP_200_OK,
     summary="Atualizar estado da corrida (transição de saga)",
     operation_id="updateRideStatus",
-    tags=["rides"],
+    responses={503: {"model": LockPunishmentDTO}},
+    description=(
+        "Aplica uma transição de estado validada pela máquina de estados. "
+        "Requisições idempotentes (mesmo serviceId + logicalTimestamp) são "
+        "ignoradas com segurança. Retorna 503 se o circuit breaker estiver aberto."
+    ),
 )
 async def atualizar_status(
     rideUuid: str,
-    dados: RideStatusUpdateDTO,
-    servico: RideService = Depends(_criar_servico),
-    _grupo_autenticado: Group = Depends(verify_api_key),
+    body: RideStatusUpdateDTO,
+    grupo: AuthGroup,
+    service: Service,
 ) -> RideStatusDTO:
-    circuit_breaker = circuit_breaker_manager.get_breaker(dados.serviceId)
+    logger.info(
+        "PATCH /rides/%s/status | group=%s newState=%s ts=%d",
+        rideUuid,
+        body.serviceId,
+        body.newState,
+        body.logicalTimestamp,
+    )
 
-    # Verificação do status do circuit breaker
-    if not circuit_breaker.check_state():
-        punishment = LockPunishmentDTO(
-            error = "CIRCUIT_BREAKER_OPEN",
-            message = f"O serviço {dados.serviceId} está temporariamente bloqueado devido a multiplos timeouts e/ou falhas.",
-            service_id = dados.serviceId,
-            recovery_time = RECOVERY_TIMEOUT
-        )
+    if blocked := _verificar_circuit_breaker(body.serviceId):
+        return blocked
 
-        return JSONResponse(
-            status_code=503,
-            content=punishment.model_dump(mode="json")
-        )
-    
-    resultado = await servico.atualizar_status(rideUuid, dados)
-    
-    circuit_breaker.success()
-    
-    return resultado
+    circuit_breaker = circuit_breaker_manager.get_breaker(body.serviceId)
+    try:
+        resultado = await service.atualizar_status(rideUuid, body)
+        circuit_breaker.success()
+        return resultado
+    except Exception:
+        circuit_breaker.failure()
+        raise
+
 
 @router.get(
-    "/rides/{rideUuid}/audit",
-    status_code=200,
+    "/{rideUuid}/proposals",
+    response_model=AuctionResultDTO,
+    status_code=status.HTTP_200_OK,
+    summary="Consultar resultado do leilão",
+    operation_id="getRideProposals",
+    description=(
+        "Retorna todas as propostas válidas recebidas, o vencedor selecionado "
+        "e o status atual do leilão. Disponível para qualquer grupo autenticado."
+    ),
+)
+async def buscar_propostas(
+    rideUuid: str,
+    grupo: AuthGroup,
+    service: Service,
+) -> AuctionResultDTO:
+    return await service.buscar_propostas(rideUuid)
+
+
+@router.get(
+    "/{rideUuid}/audit",
     response_model=AuditLogDTO,
-    summary="Log causal completo da corrida (relógios lógicos)",
+    status_code=status.HTTP_200_OK,
+    summary="Log causal completo da corrida",
     operation_id="getRideAuditLog",
-    tags=["rides"],
+    description="Retorna todos os eventos registrados para a corrida em ordem cronológica.",
 )
 async def buscar_audit_log(
     rideUuid: str,
-    servico: RideService = Depends(_criar_servico),
-    _grupo_autenticado: Group = Depends(verify_api_key),
+    grupo: AuthGroup,
+    service: Service,
 ) -> AuditLogDTO:
-    return await servico.buscar_audit_log(rideUuid)
+    return await service.buscar_audit_log(rideUuid)
+
+
+# ---------------------------------------------------------------------------
+# Rotas — Locks
+# ---------------------------------------------------------------------------
+
 
 @router.post(
-    "/locks/{rideUuid}",
+    "/{rideUuid}/lock",
+    status_code=status.HTTP_200_OK,
     summary="Adquirir lock distribuído sobre a corrida",
     operation_id="acquireLock",
     tags=["locks"],
+    responses={
+        200: {"model": LockResponseDTO},
+        409: {"model": LockConflictDTO},
+        503: {"model": LockPunishmentDTO},
+    },
+    description=(
+        "Adquire ou renova o lock para uma corrida. "
+        "Retorna 409 se o lock já estiver detido por outro grupo. "
+        "Retorna 503 se o circuit breaker estiver aberto."
+    ),
 )
 async def adquirir_lock(
     rideUuid: str,
-    dados: LockRequestDTO,
-    servico: RideService = Depends(_criar_servico),
-    _grupo_autenticado: Group = Depends(verify_api_key),
+    body: LockRequestDTO,
+    grupo: AuthGroup,
+    service: Service,
 ):
-    """
-    Adquire ou renova o lock. Se outro serviço já detém o lock ativo,
-    retorna 409 com o corpo LockConflict (rideUuid, heldBy, expiresAt).
-    """
-    lock_atual = await servico.lock_repo.buscar_por_ride(rideUuid)
-    circuit_breaker = circuit_breaker_manager.get_breaker(dados.serviceId)
-
-    agora = datetime.utcnow()
-
-    # Verificação do status do circuit breaker
-    if not circuit_breaker.check_state():
-        punishment = LockPunishmentDTO(
-            error = "CIRCUIT_BREAKER_OPEN",
-            message = f"O serviço {dados.serviceId} está temporariamente bloqueado devido a multiplos timeouts e/ou falhas.",
-            service_id = dados.serviceId,
-            recovery_time = RECOVERY_TIMEOUT
-        )
-
-        return JSONResponse(
-            status_code=503,
-            content=punishment.model_dump(mode="json")
-        )
-
-    if (
-        lock_atual
-        and lock_atual.held_by != dados.serviceId
-        and lock_atual.expires_at > agora
-    ):
-        conflito = LockConflictDTO(
-            rideUuid=rideUuid,
-            heldBy=lock_atual.held_by,
-            expiresAt=lock_atual.expires_at,
-        )
-        return JSONResponse(
-            status_code=409,
-            content=conflito.model_dump(mode="json"),
-        )
-
-    resultado = await servico.adquirir_lock(rideUuid, dados)
-
-    return JSONResponse(
-        status_code=200,
-        content=resultado.model_dump(mode="json"),
+    logger.info(
+        "POST /rides/%s/lock | group=%s ttl=%ds",
+        rideUuid,
+        body.serviceId,
+        body.ttlSeconds,
     )
 
+    if blocked := _verificar_circuit_breaker(body.serviceId):
+        return blocked
+
+    circuit_breaker = circuit_breaker_manager.get_breaker(body.serviceId)
+    try:
+        resultado = await service.adquirir_lock(rideUuid, body)
+        circuit_breaker.success()
+        return resultado
+    except Exception:
+        circuit_breaker.failure()
+        raise
+
+
 @router.delete(
-    "/locks/{rideUuid}",
-    status_code=204,
+    "/{rideUuid}/lock",
+    status_code=status.HTTP_204_NO_CONTENT,
     summary="Liberar lock distribuído",
     operation_id="releaseLock",
     tags=["locks"],
+    description="Libera o lock de uma corrida. Apenas o detentor atual pode liberar.",
 )
 async def liberar_lock(
     rideUuid: str,
-    dados: LockReleaseRequestDTO,
-    servico: RideService = Depends(_criar_servico),
-    _grupo_autenticado: Group = Depends(verify_api_key),
-) -> Response:
-    await servico.liberar_lock(rideUuid, dados)
-    return Response(status_code=204)
+    body: LockReleaseRequestDTO,
+    grupo: AuthGroup,
+    service: Service,
+) -> None:
+    logger.info(
+        "DELETE /rides/%s/lock | group=%s",
+        rideUuid,
+        body.serviceId,
+    )
+    await service.liberar_lock(rideUuid, body)
