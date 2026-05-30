@@ -43,8 +43,8 @@ _LOCK_TTL_VENCEDOR = 60
 
 
 def _utcnow() -> datetime:
-    """Retorna datetime aware em UTC — substitui datetime.utcnow() em todo o módulo."""
-    return datetime.now(tz=timezone.utc)
+    """Retorna datetime naive em UTC — consistente com colunas TIMESTAMP WITHOUT TIME ZONE."""
+    return datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
 
 def selecionar_vencedor(propostas: List[RideProposal]) -> Optional[RideProposal]:
