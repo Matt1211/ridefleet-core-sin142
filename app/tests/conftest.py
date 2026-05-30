@@ -30,7 +30,7 @@ fabrica_sessao_teste = async_sessionmaker(engine_teste, expire_on_commit=False)
 
 
 # Fixtures
-@pytest_asyncio.fixture(scope="session", autouse=True)
+@pytest_asyncio.fixture(scope="function", autouse=True)
 async def criar_tabelas():
     """Cria todas as tabelas uma vez antes da suíte rodar."""
     async with engine_teste.begin() as conn:

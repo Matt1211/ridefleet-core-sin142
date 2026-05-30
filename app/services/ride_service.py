@@ -44,6 +44,7 @@ from app.repositories.proposal_repository import ProposalRepository
 from app.repositories.ride_repository import RideRepository
 from app.services.state_machine_service import StateMachineService
 from app.core.metrics import rides_delegated_total, rides_local_total
+from datetime import datetime, timedelta, UTC
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +388,8 @@ class RideService:
 
         expires_at = agora + timedelta(seconds=dados.ttlSeconds)
         lock = await self.lock_repo.criar_ou_renovar(ride_uuid, dados.serviceId, expires_at, ride.id)
+         
+        
         logger.info(
             "Lock adquirido: corrida %s => detentor '%s' (TTL: %ds, expira: %s)",
             ride_uuid,
