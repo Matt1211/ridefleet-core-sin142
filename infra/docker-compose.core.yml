@@ -106,6 +106,7 @@ services:
 
 networks:
   ridefleet-net:
+    name: ridefleet-net
     driver: bridge
 
 volumes:

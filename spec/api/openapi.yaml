@@ -635,13 +635,11 @@ webhooks:
 
         **Critério de seleção do vencedor (executado pelo core):**
 
-        1. Menor `estimatedEta`
+        1. Menor `estimatedPrice` (preço estimado)
 
-        2. Em empate: menor `estimatedPrice`
+        2. Em empate: menor `estimatedEta` (tempo de chegada)
 
-        3. Em empate: menor `logicalTimestamp` (chegou causalmente primeiro)
-
-        4. Em empate total: ordem lexicográfica de `groupId` (determinístico)
+        3. Em empate total: ordem lexicográfica de `groupId` (determinístico)
 
 
         Grupos que retornarem `204`, não responderem ou responderem com erro

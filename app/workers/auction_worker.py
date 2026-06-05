@@ -396,11 +396,25 @@ async def _chamar_grupo(
 
         if resp.status_code == 200:
             dados = resp.json()
+            eta = dados.get("estimatedEta")
+            if eta is not None and eta < 1:
+                logger.warning(
+                    "Proposta de '%s' rejeitada: estimatedEta=%s viola mínimo de 1",
+                    group_id,
+                    eta,
+                )
+                return RideProposal(
+                    group_id=group_id,
+                    service_url=service_url,
+                    status="error",
+                    response_time_ms=elapsed_ms,
+                    responded_at=_utcnow(),
+                )
             return RideProposal(
                 group_id=group_id,
                 service_url=service_url,
                 status="accepted",
-                estimated_eta=dados.get("estimatedEta"),
+                estimated_eta=eta,
                 estimated_price=dados.get("estimatedPrice"),
                 logical_timestamp=dados.get("logicalTimestamp"),
                 response_time_ms=elapsed_ms,
