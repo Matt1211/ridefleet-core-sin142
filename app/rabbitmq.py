@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -25,18 +26,41 @@ class RabbitMQBroker:
         self.exchange: aio_pika.RobustExchange | None = None
 
     async def connect(self) -> None:
-        self.connection = await aio_pika.connect_robust(self.rabbitmq_url)
-        self.channel = await self.connection.channel()
+        max_retries = 10
+        base_delay = 1.0
 
-        self.exchange = await self.channel.declare_exchange(
-            self.exchange_name,
-            ExchangeType.TOPIC,
-            durable=True,
-        )
+        for attempt in range(max_retries):
+            try:
+                self.connection = await aio_pika.connect_robust(self.rabbitmq_url)
+                self.channel = await self.connection.channel()
 
-        await self._declare_queues()
+                self.exchange = await self.channel.declare_exchange(
+                    self.exchange_name,
+                    ExchangeType.TOPIC,
+                    durable=True,
+                )
 
-        logger.info("RabbitMQ conectado com sucesso")
+                await self._declare_queues()
+                logger.info("RabbitMQ conectado com sucesso")
+                return
+
+            except Exception as exc:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        "Falha ao conectar RabbitMQ (tentativa %d/%d), "
+                        "retentando em %.1fs: %s",
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                        exc,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        "Falha ao conectar RabbitMQ após %d tentativas", max_retries
+                    )
+                    raise
 
     async def close(self) -> None:
         if self.connection:
@@ -62,6 +86,15 @@ class RabbitMQBroker:
             queue = await self.channel.declare_queue(queue_name, durable=True)
             await queue.bind(self.exchange, routing_key=routing_key)
 
+    async def _ensure_connected(self) -> None:
+        if not self.exchange:
+            logger.warning("RabbitMQ desconectado, tentando reconectar...")
+            try:
+                await self.connect()
+            except Exception as exc:
+                logger.error("Falha ao reconectar RabbitMQ: %s", exc)
+                raise RuntimeError("RabbitMQ não está conectado") from exc
+
     async def publish_event(
         self,
         event_type: str,
@@ -70,8 +103,7 @@ class RabbitMQBroker:
         logical_timestamp: int,
         payload: dict[str, Any],
     ) -> None:
-        if not self.exchange:
-            raise RuntimeError("RabbitMQ não está conectado")
+        await self._ensure_connected()
 
         message_body = {
             "eventType": event_type,
@@ -88,17 +120,32 @@ class RabbitMQBroker:
             delivery_mode=DeliveryMode.PERSISTENT,
         )
 
-        await self.exchange.publish(
-            message,
-            routing_key=event_type,
-        )
-        logger.info(
-            "Evento publicado: tipo='%s' corrida=%s serviceId='%s' ts=%d",
-            event_type,
-            ride_id,
-            service_id,
-            logical_timestamp,
-        )
+        try:
+            await self.exchange.publish(
+                message,
+                routing_key=event_type,
+            )
+            logger.info(
+                "Evento publicado: tipo='%s' corrida=%s serviceId='%s' ts=%d",
+                event_type,
+                ride_id,
+                service_id,
+                logical_timestamp,
+            )
+        except Exception as exc:
+            logger.error("Erro ao publicar evento: %s — tentando reconectar", exc)
+            self.exchange = None
+            self.channel = None
+            self.connection = None
+            await self._ensure_connected()
+            await self.exchange.publish(message, routing_key=event_type)
+            logger.info(
+                "Evento publicado (após reconexão): tipo='%s' corrida=%s serviceId='%s' ts=%d",
+                event_type,
+                ride_id,
+                service_id,
+                logical_timestamp,
+            )
 
 
 rabbitmq_broker = RabbitMQBroker()

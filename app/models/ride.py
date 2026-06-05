@@ -1,10 +1,15 @@
 import enum
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String
 
 from app.models.base import Base
+
+
+def _utcnow_naive() -> datetime:
+    """Retorna datetime naive em UTC para colunas TIMESTAMP WITHOUT TIME ZONE."""
+    return datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
 
 class RideStatus(str, enum.Enum):
@@ -34,7 +39,7 @@ class Ride(Base):
         index=True,
         default=lambda: str(uuid.uuid4()),
     )
-    registered_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    registered_at = Column(DateTime, default=_utcnow_naive, nullable=False)
 
     origin_group_fk = Column(Integer, ForeignKey("groups.id"), nullable=False, index=True)
     recipient_group_fk = Column(Integer, ForeignKey("groups.id"), nullable=True, index=True)
@@ -67,5 +72,5 @@ class Ride(Base):
     auction_status = Column(String, default=AuctionStatus.OPEN.value, nullable=False)
     auction_closed_at = Column(DateTime, nullable=True)
     excluded_groups = Column(String, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow,
-                        onupdate=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow_naive,
+                        onupdate=_utcnow_naive, nullable=False)

@@ -490,57 +490,86 @@ async def iniciar_worker() -> None:
     Usa prefetch_count=1 para garantir que apenas uma mensagem seja
     processada por vez — evita condição de corrida em leilões simultâneos.
     ACK somente após processamento completo; NACK + requeue em caso de erro.
+    Reconecta automaticamente se o RabbitMQ cair durante o processamento.
     """
-    if not rabbitmq_broker.connection:
-        logger.warning("RabbitMQ não conectado — auction worker não iniciado.")
-        return
+    max_retries = 5
+    retry_delay = 5.0
 
-    channel = await rabbitmq_broker.connection.channel()
-    await channel.set_qos(prefetch_count=1)
-
-    queue = await channel.declare_queue("ridefleet.auction.requests", durable=True)
-
-    logger.info("Auction worker aguardando mensagens em ridefleet.auction.requests")
-
-    # Escopo local — sem estado global mutável
-    last_processed_timestamp = 0
-
-    async with queue.iterator() as messages:
-        async for message in messages:
-            try:
-                body = json.loads(message.body.decode("utf-8"))
-                logical_timestamp: int = body.get("logicalTimestamp", 0)
-                ride_uuid: str = body.get("rideId") or ""
-                payload: dict = body.get("payload", {})
-                auction_timeout: int = payload.get("auctionTimeoutSeconds", 10)
-                excluded_groups: List[str] = payload.get("excludedGroups", [])
-
-                if not ride_uuid:
-                    logger.error("Mensagem sem rideId descartada: %s", body)
-                    await message.ack()
+    for attempt in range(max_retries):
+        try:
+            if not rabbitmq_broker.connection:
+                logger.warning("RabbitMQ não conectado — tentando conectar...")
+                try:
+                    await rabbitmq_broker.connect()
+                except Exception as exc:
+                    logger.error("Falha ao conectar RabbitMQ: %s", exc)
+                    await asyncio.sleep(retry_delay)
                     continue
 
-                if logical_timestamp < last_processed_timestamp:
-                    logger.warning(
-                        "Mensagem fora de ordem descartada: "
-                        "received=%d last=%d ride=%s",
-                        logical_timestamp,
-                        last_processed_timestamp,
-                        ride_uuid,
-                    )
-                    await message.ack()
-                    continue
+            channel = await rabbitmq_broker.connection.channel()
+            await channel.set_qos(prefetch_count=1)
 
-                last_processed_timestamp = logical_timestamp
-                await lamport_clock.update(logical_timestamp)
+            queue = await channel.declare_queue("ridefleet.auction.requests", durable=True)
 
-                await _executar_leilao(ride_uuid, auction_timeout, excluded_groups)
-                await message.ack()
+            logger.info("Auction worker aguardando mensagens em ridefleet.auction.requests")
 
-            except Exception as exc:
-                logger.error(
-                    "Erro no auction worker ao processar mensagem: %s",
-                    exc,
-                    exc_info=True,
-                )
-                await message.nack(requeue=True)
+            # Escopo local — sem estado global mutável
+            last_processed_timestamp = 0
+
+            async with queue.iterator() as messages:
+                async for message in messages:
+                    try:
+                        body = json.loads(message.body.decode("utf-8"))
+                        logical_timestamp: int = body.get("logicalTimestamp", 0)
+                        ride_uuid: str = body.get("rideId") or ""
+                        payload: dict = body.get("payload", {})
+                        auction_timeout: int = payload.get("auctionTimeoutSeconds", 10)
+                        excluded_groups: List[str] = payload.get("excludedGroups", [])
+
+                        if not ride_uuid:
+                            logger.error("Mensagem sem rideId descartada: %s", body)
+                            await message.ack()
+                            continue
+
+                        if logical_timestamp < last_processed_timestamp:
+                            logger.warning(
+                                "Mensagem fora de ordem descartada: "
+                                "received=%d last=%d ride=%s",
+                                logical_timestamp,
+                                last_processed_timestamp,
+                                ride_uuid,
+                            )
+                            await message.ack()
+                            continue
+
+                        last_processed_timestamp = logical_timestamp
+                        await lamport_clock.update(logical_timestamp)
+
+                        await _executar_leilao(ride_uuid, auction_timeout, excluded_groups)
+                        await message.ack()
+
+                    except Exception as exc:
+                        logger.error(
+                            "Erro no auction worker ao processar mensagem: %s",
+                            exc,
+                            exc_info=True,
+                        )
+                        await message.nack(requeue=True)
+
+        except Exception as exc:
+            logger.error(
+                "Erro crítico no auction worker (tentativa %d/%d): %s",
+                attempt + 1,
+                max_retries,
+                exc,
+                exc_info=True,
+            )
+            rabbitmq_broker.connection = None
+            rabbitmq_broker.channel = None
+            rabbitmq_broker.exchange = None
+
+            if attempt < max_retries - 1:
+                logger.info("Aguardando %.1fs antes de tentar reconectar...", retry_delay)
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error("Auction worker falhou após %d tentativas", max_retries)
