@@ -70,6 +70,26 @@ def selecionar_vencedor(propostas: List[RideProposal]) -> Optional[RideProposal]
     )
 
 
+def _validar_proposta(eta, price) -> Optional[str]:
+    """Valida uma proposta 200 contra o contrato (openapi IncomingProposal).
+
+    Regras (spec/api/openapi.yaml — IncomingProposal):
+        estimatedEta:   obrigatório, minimum 1
+        estimatedPrice: obrigatório, minimum 0
+
+    Retorna o motivo da rejeição (str) ou None se a proposta for válida.
+    """
+    if eta is None:
+        return "estimatedEta ausente (campo obrigatório)"
+    if eta < 1:
+        return f"estimatedEta={eta} viola mínimo de 1"
+    if price is None:
+        return "estimatedPrice ausente (campo obrigatório)"
+    if price < 0:
+        return f"estimatedPrice={price} é negativo"
+    return None
+
+
 async def _executar_leilao(
     ride_uuid: str,
     auction_timeout: int,
@@ -397,11 +417,12 @@ async def _chamar_grupo(
         if resp.status_code == 200:
             dados = resp.json()
             eta = dados.get("estimatedEta")
-            if eta is not None and eta < 1:
+            price = dados.get("estimatedPrice")
+
+            motivo = _validar_proposta(eta, price)
+            if motivo:
                 logger.warning(
-                    "Proposta de '%s' rejeitada: estimatedEta=%s viola mínimo de 1",
-                    group_id,
-                    eta,
+                    "Proposta de '%s' rejeitada: %s", group_id, motivo
                 )
                 return RideProposal(
                     group_id=group_id,
@@ -415,7 +436,7 @@ async def _chamar_grupo(
                 service_url=service_url,
                 status="accepted",
                 estimated_eta=eta,
-                estimated_price=dados.get("estimatedPrice"),
+                estimated_price=price,
                 logical_timestamp=dados.get("logicalTimestamp"),
                 response_time_ms=elapsed_ms,
                 responded_at=_utcnow(),
@@ -505,20 +526,24 @@ async def iniciar_worker() -> None:
     processada por vez — evita condição de corrida em leilões simultâneos.
     ACK somente após processamento completo; NACK + requeue em caso de erro.
     Reconecta automaticamente se o RabbitMQ cair durante o processamento.
-    """
-    max_retries = 5
-    retry_delay = 5.0
 
-    for attempt in range(max_retries):
+    Estratégia de resiliência:
+      - Laço externo *ilimitado*: o worker nunca encerra silenciosamente — em
+        caso de falha crítica reconecta indefinidamente com backoff exponencial
+        limitado (`max_delay`). Evita o "death" silencioso que deixaria a API no
+        ar (health 200) sem processar nenhum leilão.
+      - O orçamento de backoff é zerado a cada reconexão bem-sucedida, de modo que
+        o atraso reflete falhas *consecutivas*, não o total ao longo da vida útil.
+    """
+    base_delay = 5.0
+    max_delay = 60.0
+    consecutive_failures = 0
+
+    while True:
         try:
             if not rabbitmq_broker.connection:
                 logger.warning("RabbitMQ não conectado — tentando conectar...")
-                try:
-                    await rabbitmq_broker.connect()
-                except Exception as exc:
-                    logger.error("Falha ao conectar RabbitMQ: %s", exc)
-                    await asyncio.sleep(retry_delay)
-                    continue
+                await rabbitmq_broker.connect()
 
             channel = await rabbitmq_broker.connection.channel()
             await channel.set_qos(prefetch_count=1)
@@ -526,6 +551,9 @@ async def iniciar_worker() -> None:
             queue = await channel.declare_queue("ridefleet.auction.requests", durable=True)
 
             logger.info("Auction worker aguardando mensagens em ridefleet.auction.requests")
+
+            # Conexão + canal + fila saudáveis → zera o orçamento de falhas/backoff.
+            consecutive_failures = 0
 
             # Escopo local — sem estado global mutável
             last_processed_timestamp = 0
@@ -570,20 +598,24 @@ async def iniciar_worker() -> None:
                         )
                         await message.nack(requeue=True)
 
+        except asyncio.CancelledError:
+            # Encerramento da aplicação (lifespan cancela a task) — honra o cancelamento.
+            logger.info("Auction worker cancelado — encerrando.")
+            raise
+
         except Exception as exc:
+            consecutive_failures += 1
+            delay = min(base_delay * (2 ** (consecutive_failures - 1)), max_delay)
             logger.error(
-                "Erro crítico no auction worker (tentativa %d/%d): %s",
-                attempt + 1,
-                max_retries,
+                "Erro crítico no auction worker (falha consecutiva #%d): %s — "
+                "reconectando em %.1fs",
+                consecutive_failures,
                 exc,
+                delay,
                 exc_info=True,
             )
             rabbitmq_broker.connection = None
             rabbitmq_broker.channel = None
             rabbitmq_broker.exchange = None
 
-            if attempt < max_retries - 1:
-                logger.info("Aguardando %.1fs antes de tentar reconectar...", retry_delay)
-                await asyncio.sleep(retry_delay)
-            else:
-                logger.error("Auction worker falhou após %d tentativas", max_retries)
+            await asyncio.sleep(delay)
