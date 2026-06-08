@@ -14,11 +14,43 @@ servers:
     description: Core local (desenvolvimento)
 
 # Segurança aplicada globalmente a todos os endpoints.
-# Endpoints públicos (/health e /groups/register) sobrescrevem com security: []
+# Endpoints públicos (/health e POST /groups/register) sobrescrevem com security: []
 security:
   - ApiKeyAuth: []
 
 paths:
+
+  /groups:
+    get:
+      summary: Listar grupos registrados
+      operationId: listGroups
+      tags: [auth]
+      security:
+        - ApiKeyAuth: []
+      description: >
+        Retorna todos os grupos atualmente registrados no ecossistema RideFleet.
+        A API Key de cada grupo **não é exposta** - apenas as informações públicas
+        necessárias para roteamento e observabilidade.
+
+
+        Útil para dashboards de observabilidade (quais grupos estão online?),
+        depuração de integração (a `serviceUrl` está correta?) e para o professor
+        verificar a conformidade do registro durante a avaliação.
+      responses:
+        "200":
+          description: Lista de grupos registrados
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GroupInfo'
+        "401":
+          description: API Key ausente ou inválida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /groups/register:
     post:
@@ -63,37 +95,6 @@ paths:
                 $ref: '#/components/schemas/GroupCredentials'
         "422":
           description: Payload inválido
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-    get:
-      summary: Listar grupos registrados
-      operationId: listGroups
-      tags: [auth]
-      security:
-        - ApiKeyAuth: []
-      description: >
-        Retorna todos os grupos atualmente registrados no ecossistema RideFleet.
-        A API Key de cada grupo **não é exposta** - apenas as informações públicas
-        necessárias para roteamento e observabilidade.
-
-
-        Útil para dashboards de observabilidade (quais grupos estão online?),
-        depuração de integração (a `serviceUrl` está correta?) e para o professor
-        verificar a conformidade do registro durante a avaliação.
-      responses:
-        "200":
-          description: Lista de grupos registrados
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/GroupInfo'
-        "401":
-          description: API Key ausente ou inválida
           content:
             application/json:
               schema:
@@ -634,13 +635,11 @@ webhooks:
 
         **Critério de seleção do vencedor (executado pelo core):**
 
-        1. Menor `estimatedEta`
+        1. Menor `estimatedPrice` (preço estimado)
 
-        2. Em empate: menor `estimatedPrice`
+        2. Em empate: menor `estimatedEta` (tempo de chegada)
 
-        3. Em empate: menor `logicalTimestamp` (chegou causalmente primeiro)
-
-        4. Em empate total: ordem lexicográfica de `groupId` (determinístico)
+        3. Em empate total: ordem lexicográfica de `groupId` (determinístico)
 
 
         Grupos que retornarem `204`, não responderem ou responderem com erro

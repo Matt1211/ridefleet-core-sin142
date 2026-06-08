@@ -6,11 +6,16 @@ e o valor do relógio lógico do core no momento do evento, permitindo
 reconstruir a relação happened-before entre serviços distintos.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String
 
 from app.models.base import Base
+
+
+def _utcnow_naive() -> datetime:
+    """Retorna datetime naive em UTC para colunas TIMESTAMP WITHOUT TIME ZONE."""
+    return datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
 
 class RideAuditEvent(Base):
@@ -24,7 +29,7 @@ class RideAuditEvent(Base):
     logical_timestamp = Column(Integer, nullable=False)
     wall_clock_time = Column(
         DateTime,
-        default=datetime.utcnow,
+        default=_utcnow_naive,
         nullable=False,
     )
     payload = Column(JSON, nullable=True)

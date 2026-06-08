@@ -70,6 +70,26 @@ def selecionar_vencedor(propostas: List[RideProposal]) -> Optional[RideProposal]
     )
 
 
+def _validar_proposta(eta, price) -> Optional[str]:
+    """Valida uma proposta 200 contra o contrato (openapi IncomingProposal).
+
+    Regras (spec/api/openapi.yaml — IncomingProposal):
+        estimatedEta:   obrigatório, minimum 1
+        estimatedPrice: obrigatório, minimum 0
+
+    Retorna o motivo da rejeição (str) ou None se a proposta for válida.
+    """
+    if eta is None:
+        return "estimatedEta ausente (campo obrigatório)"
+    if eta < 1:
+        return f"estimatedEta={eta} viola mínimo de 1"
+    if price is None:
+        return "estimatedPrice ausente (campo obrigatório)"
+    if price < 0:
+        return f"estimatedPrice={price} é negativo"
+    return None
+
+
 async def _executar_leilao(
     ride_uuid: str,
     auction_timeout: int,
@@ -396,12 +416,27 @@ async def _chamar_grupo(
 
         if resp.status_code == 200:
             dados = resp.json()
+            eta = dados.get("estimatedEta")
+            price = dados.get("estimatedPrice")
+
+            motivo = _validar_proposta(eta, price)
+            if motivo:
+                logger.warning(
+                    "Proposta de '%s' rejeitada: %s", group_id, motivo
+                )
+                return RideProposal(
+                    group_id=group_id,
+                    service_url=service_url,
+                    status="error",
+                    response_time_ms=elapsed_ms,
+                    responded_at=_utcnow(),
+                )
             return RideProposal(
                 group_id=group_id,
                 service_url=service_url,
                 status="accepted",
-                estimated_eta=dados.get("estimatedEta"),
-                estimated_price=dados.get("estimatedPrice"),
+                estimated_eta=eta,
+                estimated_price=price,
                 logical_timestamp=dados.get("logicalTimestamp"),
                 response_time_ms=elapsed_ms,
                 responded_at=_utcnow(),
@@ -490,57 +525,97 @@ async def iniciar_worker() -> None:
     Usa prefetch_count=1 para garantir que apenas uma mensagem seja
     processada por vez — evita condição de corrida em leilões simultâneos.
     ACK somente após processamento completo; NACK + requeue em caso de erro.
+    Reconecta automaticamente se o RabbitMQ cair durante o processamento.
+
+    Estratégia de resiliência:
+      - Laço externo *ilimitado*: o worker nunca encerra silenciosamente — em
+        caso de falha crítica reconecta indefinidamente com backoff exponencial
+        limitado (`max_delay`). Evita o "death" silencioso que deixaria a API no
+        ar (health 200) sem processar nenhum leilão.
+      - O orçamento de backoff é zerado a cada reconexão bem-sucedida, de modo que
+        o atraso reflete falhas *consecutivas*, não o total ao longo da vida útil.
     """
-    if not rabbitmq_broker.connection:
-        logger.warning("RabbitMQ não conectado — auction worker não iniciado.")
-        return
+    base_delay = 5.0
+    max_delay = 60.0
+    consecutive_failures = 0
 
-    channel = await rabbitmq_broker.connection.channel()
-    await channel.set_qos(prefetch_count=1)
+    while True:
+        try:
+            if not rabbitmq_broker.connection:
+                logger.warning("RabbitMQ não conectado — tentando conectar...")
+                await rabbitmq_broker.connect()
 
-    queue = await channel.declare_queue("ridefleet.auction.requests", durable=True)
+            channel = await rabbitmq_broker.connection.channel()
+            await channel.set_qos(prefetch_count=1)
 
-    logger.info("Auction worker aguardando mensagens em ridefleet.auction.requests")
+            queue = await channel.declare_queue("ridefleet.auction.requests", durable=True)
 
-    # Escopo local — sem estado global mutável
-    last_processed_timestamp = 0
+            logger.info("Auction worker aguardando mensagens em ridefleet.auction.requests")
 
-    async with queue.iterator() as messages:
-        async for message in messages:
-            try:
-                body = json.loads(message.body.decode("utf-8"))
-                logical_timestamp: int = body.get("logicalTimestamp", 0)
-                ride_uuid: str = body.get("rideId") or ""
-                payload: dict = body.get("payload", {})
-                auction_timeout: int = payload.get("auctionTimeoutSeconds", 10)
-                excluded_groups: List[str] = payload.get("excludedGroups", [])
+            # Conexão + canal + fila saudáveis → zera o orçamento de falhas/backoff.
+            consecutive_failures = 0
 
-                if not ride_uuid:
-                    logger.error("Mensagem sem rideId descartada: %s", body)
-                    await message.ack()
-                    continue
+            # Escopo local — sem estado global mutável
+            last_processed_timestamp = 0
 
-                if logical_timestamp < last_processed_timestamp:
-                    logger.warning(
-                        "Mensagem fora de ordem descartada: "
-                        "received=%d last=%d ride=%s",
-                        logical_timestamp,
-                        last_processed_timestamp,
-                        ride_uuid,
-                    )
-                    await message.ack()
-                    continue
+            async with queue.iterator() as messages:
+                async for message in messages:
+                    try:
+                        body = json.loads(message.body.decode("utf-8"))
+                        logical_timestamp: int = body.get("logicalTimestamp", 0)
+                        ride_uuid: str = body.get("rideId") or ""
+                        payload: dict = body.get("payload", {})
+                        auction_timeout: int = payload.get("auctionTimeoutSeconds", 10)
+                        excluded_groups: List[str] = payload.get("excludedGroups", [])
 
-                last_processed_timestamp = logical_timestamp
-                await lamport_clock.update(logical_timestamp)
+                        if not ride_uuid:
+                            logger.error("Mensagem sem rideId descartada: %s", body)
+                            await message.ack()
+                            continue
 
-                await _executar_leilao(ride_uuid, auction_timeout, excluded_groups)
-                await message.ack()
+                        if logical_timestamp < last_processed_timestamp:
+                            logger.warning(
+                                "Mensagem fora de ordem descartada: "
+                                "received=%d last=%d ride=%s",
+                                logical_timestamp,
+                                last_processed_timestamp,
+                                ride_uuid,
+                            )
+                            await message.ack()
+                            continue
 
-            except Exception as exc:
-                logger.error(
-                    "Erro no auction worker ao processar mensagem: %s",
-                    exc,
-                    exc_info=True,
-                )
-                await message.nack(requeue=True)
+                        last_processed_timestamp = logical_timestamp
+                        await lamport_clock.update(logical_timestamp)
+
+                        await _executar_leilao(ride_uuid, auction_timeout, excluded_groups)
+                        await message.ack()
+
+                    except Exception as exc:
+                        logger.error(
+                            "Erro no auction worker ao processar mensagem: %s",
+                            exc,
+                            exc_info=True,
+                        )
+                        await message.nack(requeue=True)
+
+        except asyncio.CancelledError:
+            # Encerramento da aplicação (lifespan cancela a task) — honra o cancelamento.
+            logger.info("Auction worker cancelado — encerrando.")
+            raise
+
+        except Exception as exc:
+            consecutive_failures += 1
+            delay = min(base_delay * (2 ** (consecutive_failures - 1)), max_delay)
+            logger.error(
+                "Erro crítico no auction worker (falha consecutiva #%d): %s — "
+                "reconectando em %.1fs",
+                consecutive_failures,
+                exc,
+                delay,
+                exc_info=True,
+            )
+            rabbitmq_broker.connection = None
+            rabbitmq_broker.channel = None
+            rabbitmq_broker.exchange = None
+
+            await asyncio.sleep(delay)

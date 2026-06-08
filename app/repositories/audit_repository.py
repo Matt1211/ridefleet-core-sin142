@@ -6,7 +6,7 @@ Responsabilidade única: persistir e consultar RideAuditEvent.
 
 from typing import List
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ride_audit_event import RideAuditEvent
@@ -48,7 +48,10 @@ class AuditRepository:
                 RideAuditEvent.ride_uuid == ride_uuid,
                 RideAuditEvent.event_type == "state_transition",
                 RideAuditEvent.service_id == service_id,
-                func.json_extract(RideAuditEvent.payload, "$.clientLogicalTimestamp") == logical_timestamp,
+                # Dialect-agnostic JSON access: compiles to JSON_EXTRACT on SQLite
+                # and to a CAST over the ->> operator on PostgreSQL. Avoids calling
+                # SQLite's json_extract() literally (which does not exist in Postgres).
+                RideAuditEvent.payload["clientLogicalTimestamp"].as_integer() == logical_timestamp,
             )
         )
         return resultado.scalar_one_or_none() is not None

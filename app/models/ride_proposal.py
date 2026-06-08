@@ -5,11 +5,16 @@ Registra cada grupo convidado, sua resposta (ou ausência dela) e os
 metadados necessários para reproduzir o critério de seleção do vencedor.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String
 
 from app.models.base import Base
+
+
+def _utcnow_naive() -> datetime:
+    """Retorna datetime naive em UTC para colunas TIMESTAMP WITHOUT TIME ZONE."""
+    return datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
 
 class RideProposal(Base):
@@ -38,6 +43,6 @@ class RideProposal(Base):
 
     created_at = Column(
         DateTime,
-        default=datetime.utcnow,
+        default=_utcnow_naive,
         nullable=False,
     )

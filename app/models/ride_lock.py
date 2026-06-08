@@ -6,11 +6,16 @@ o core aceita a corrida (em nome do originServiceId) e transferido ao
 grupo vencedor após o leilão. O TTL é monitorado por um background task.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
 
 from app.models.base import Base
+
+
+def _utcnow_naive() -> datetime:
+    """Retorna datetime naive em UTC para colunas TIMESTAMP WITHOUT TIME ZONE."""
+    return datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
 
 class RideLock(Base):
@@ -23,6 +28,6 @@ class RideLock(Base):
     expires_at = Column(DateTime, nullable=False)     # prazo de expiração (UTC)
     acquired_at = Column(
         DateTime,
-        default=datetime.utcnow,
+        default=_utcnow_naive,
         nullable=False,
     )
