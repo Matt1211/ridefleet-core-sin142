@@ -10,6 +10,7 @@ from typing import List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.ride import _utcnow_naive
 from app.models.ride_lock import RideLock
 
 from app.core.metrics import locks_acquired_total
@@ -42,7 +43,7 @@ class LockRepository:
         if lock:
             lock.held_by = service_id
             lock.expires_at = expires_at
-            lock.acquired_at = datetime.utcnow()
+            lock.acquired_at = _utcnow_naive()
         else:
             lock = RideLock(
                 ride_fk=ride_id,

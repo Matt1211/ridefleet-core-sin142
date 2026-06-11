@@ -555,9 +555,6 @@ async def iniciar_worker() -> None:
             # Conexão + canal + fila saudáveis → zera o orçamento de falhas/backoff.
             consecutive_failures = 0
 
-            # Escopo local — sem estado global mutável
-            last_processed_timestamp = 0
-
             async with queue.iterator() as messages:
                 async for message in messages:
                     try:
@@ -573,18 +570,9 @@ async def iniciar_worker() -> None:
                             await message.ack()
                             continue
 
-                        if logical_timestamp < last_processed_timestamp:
-                            logger.warning(
-                                "Mensagem fora de ordem descartada: "
-                                "received=%d last=%d ride=%s",
-                                logical_timestamp,
-                                last_processed_timestamp,
-                                ride_uuid,
-                            )
-                            await message.ack()
-                            continue
-
-                        last_processed_timestamp = logical_timestamp
+                        # Duplicatas e mensagens atrasadas são inofensivas:
+                        # _executar_leilao ignora corridas cujo auction_status
+                        # não esteja mais OPEN (idempotência via banco).
                         await lamport_clock.update(logical_timestamp)
 
                         await _executar_leilao(ride_uuid, auction_timeout, excluded_groups)

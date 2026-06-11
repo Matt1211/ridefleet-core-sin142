@@ -15,7 +15,7 @@ O que NÃO é responsabilidade deste serviço:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import List, Optional
 
 from app.core.lamport_clock import lamport_clock
@@ -33,7 +33,7 @@ from app.dtos.ride_response_dto import (
 )
 from app.exceptions import ConflictException, ForbiddenException, NotFoundException, UnprocessableEntityException
 from app.models.group import Group
-from app.models.ride import AuctionStatus, Ride, RideStatus
+from app.models.ride import AuctionStatus, Ride, RideStatus, _utcnow_naive
 from app.models.ride_audit_event import RideAuditEvent
 from app.models.ride_lock import RideLock
 from app.rabbitmq import rabbitmq_broker
@@ -129,7 +129,7 @@ class RideService:
         ride = await self.ride_repo.criar(ride)
         logger.info("Corrida %s salva no banco (grupo: '%s')", ride.ride_uuid, grupo_origem.group_id)
 
-        expires = datetime.utcnow() + timedelta(
+        expires = _utcnow_naive() + timedelta(
             seconds=dados.auctionTimeoutSeconds + _LOCK_TTL_LEILAO_EXTRA
         )
         await self.lock_repo.criar_ou_renovar(ride.ride_uuid, grupo_origem.group_id, expires, ride.id)
@@ -378,7 +378,7 @@ class RideService:
         ride = await self._exigir_corrida(ride_uuid)
 
         lock = await self.lock_repo.buscar_por_ride(ride_uuid)
-        agora = datetime.utcnow()
+        agora = _utcnow_naive()
 
         if lock and lock.held_by != dados.serviceId and lock.expires_at > agora:
             raise ConflictException(
