@@ -15,6 +15,7 @@ from app.exceptions import register_exception_handlers
 from app.rabbitmq import rabbitmq_broker
 from app.workers.auction_worker import iniciar_worker as iniciar_auction_worker
 from app.workers.lock_monitor import monitorar_locks_expirados
+from app.workers.webhook_dispatcher import iniciar_dispatcher
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,10 +42,12 @@ async def lifespan(app: FastAPI):
     try:
         await rabbitmq_broker.connect()
         auction_task = asyncio.create_task(iniciar_auction_worker())
-        logger.info("Auction worker iniciado")
+        dispatcher_task = asyncio.create_task(iniciar_dispatcher())
+        logger.info("Auction worker e webhook dispatcher iniciados")
     except Exception as exc:
         logger.warning("RabbitMQ indisponível na inicialização: %s", exc)
         auction_task = None
+        dispatcher_task = None
 
     monitor_task = asyncio.create_task(monitorar_locks_expirados())
     logger.info("Lock monitor iniciado")
@@ -56,6 +59,8 @@ async def lifespan(app: FastAPI):
     monitor_task.cancel()
     if auction_task:
         auction_task.cancel()
+    if dispatcher_task:
+        dispatcher_task.cancel()
 
     await http_client.aclose()
     await rabbitmq_broker.close()

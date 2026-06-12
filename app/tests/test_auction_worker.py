@@ -1,19 +1,20 @@
 """
 Testes de integração para _executar_leilao.
 
-Estratégia:
-  - Seed de dados via db_teste (SQLite em memória compartilhado).
-  - AsyncSessionLocal patchado para usar a mesma factory de testes.
-  - _chamar_grupo patchado para retornar propostas sintéticas.
-  - _notificar_vencedor patchado para evitar chamadas HTTP externas.
-  - rabbitmq_broker.publish_event patchado com AsyncMock.
+Estratégia após a refatoração assíncrona (issue #24):
+  - Propostas são pré-semeadas no banco — simulam grupos que responderam via
+    POST /api/v1/rides/{rideUuid}/proposals antes do deadline.
+  - asyncio.sleep é patchado para execução instantânea.
+  - AsyncSessionLocal é redirecionado para SQLite de testes via _PatchedSessionLocal.
+  - rabbitmq_broker.publish_event é mockado com AsyncMock.
 
 Cobre:
-  - Publicação de ride_created antes do scatter-gather
-  - Leilão sem propostas aceitas → corrida cancelada, sem lock
-  - Todos os parceiros com timeout → corrida cancelada (late == ignorado por construção)
-  - Leilão com vencedor → corrida em match, lock transferido, ride_status_changed publicado
-  - Idempotência: leilão já encerrado não reexecuta
+  - Publicação de ride_created antes do deadline wait
+  - Sem propostas aceitas no banco → corrida cancelada
+  - Proposta com status=passed não conta como aceita → corrida cancelada
+  - Com proposta aceita → corrida em MATCH, lock transferido, ride_status_changed publicado
+  - ride_status_changed com vencedor inclui origin, destination, passengerId e lockExpiresAt
+  - Idempotência: leilão já encerrado não reexecuta nem republica eventos
 """
 
 import pytest
@@ -27,8 +28,6 @@ from app.models.ride import AuctionStatus, Ride, RideStatus
 from app.models.ride_proposal import RideProposal
 from app.rabbitmq import rabbitmq_broker
 from app.workers.auction_worker import _executar_leilao
-
-# Importa a factory do conftest indiretamente via módulo
 from app.tests.conftest import fabrica_sessao_teste
 
 
@@ -37,7 +36,7 @@ from app.tests.conftest import fabrica_sessao_teste
 # ---------------------------------------------------------------------------
 
 
-async def _seed_grupo(db: AsyncSession, group_id: str = "grupo-parceiro") -> Group:
+async def _seed_grupo(db: AsyncSession, group_id: str) -> Group:
     grupo = Group(
         group_id=group_id,
         group_name=f"Grupo {group_id}",
@@ -50,15 +49,18 @@ async def _seed_grupo(db: AsyncSession, group_id: str = "grupo-parceiro") -> Gro
     return grupo
 
 
-async def _seed_ride(db: AsyncSession, grupo: Group) -> Ride:
+async def _seed_ride(db: AsyncSession, grupo_origem: Group) -> Ride:
     ride = Ride(
-        origin_group_fk=grupo.id,
-        origin_group_id=grupo.group_id,
+        origin_group_fk=grupo_origem.id,
+        origin_group_id=grupo_origem.group_id,
         passenger_uuid="passageiro-teste",
         status=RideStatus.REQUEST.value,
         auction_status=AuctionStatus.OPEN.value,
         origin_lat=-20.75,
         origin_lng=-42.88,
+        origin_street="Av. P.H. Rolfs",
+        origin_city="Viçosa",
+        origin_state="MG",
         dest_lat=-20.76,
         dest_lng=-42.89,
     )
@@ -68,46 +70,41 @@ async def _seed_ride(db: AsyncSession, grupo: Group) -> Ride:
     return ride
 
 
-def _proposta_aceita(group_id: str, price: float, eta: int) -> RideProposal:
-    return RideProposal(
+async def _seed_proposta(
+    db: AsyncSession,
+    ride: Ride,
+    group_id: str,
+    status: str,
+    price: float | None = None,
+    eta: int | None = None,
+) -> RideProposal:
+    p = RideProposal(
+        ride_fk=ride.id,
+        ride_uuid=ride.ride_uuid,
         group_id=group_id,
         service_url=f"http://{group_id}:8080",
-        status="accepted",
+        status=status,
         estimated_price=price,
         estimated_eta=eta,
     )
-
-
-def _proposta_timeout(group_id: str) -> RideProposal:
-    return RideProposal(
-        group_id=group_id,
-        service_url=f"http://{group_id}:8080",
-        status="timeout",
-    )
-
-
-def _proposta_passed(group_id: str) -> RideProposal:
-    return RideProposal(
-        group_id=group_id,
-        service_url=f"http://{group_id}:8080",
-        status="passed",
-    )
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    return p
 
 
 # ---------------------------------------------------------------------------
-# Fixtures: grupo de origem + parceiro elegível separado
+# Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture
 async def origem(db_teste: AsyncSession) -> Group:
-    """Grupo que solicita a corrida — excluído do leilão pelo worker."""
     return await _seed_grupo(db_teste, "grupo-origem")
 
 
 @pytest_asyncio.fixture
 async def parceiro(db_teste: AsyncSession) -> Group:
-    """Grupo elegível para participar do leilão."""
     return await _seed_grupo(db_teste, "parceiro-1")
 
 
@@ -118,12 +115,13 @@ async def corrida(db_teste: AsyncSession, origem: Group, parceiro: Group) -> Rid
 
 
 # ---------------------------------------------------------------------------
-# Contexto: patch de AsyncSessionLocal para apontar para SQLite de testes
+# Patch de AsyncSessionLocal → SQLite de testes
 # ---------------------------------------------------------------------------
 
 
 class _PatchedSessionLocal:
-    """Substitui AsyncSessionLocal: retorna sessões da factory de testes."""
+    """Redireciona AsyncSessionLocal para a factory de testes (SQLite em memória)."""
+
     def __aenter__(self):
         self._session = fabrica_sessao_teste()
         return self._session.__aenter__()
@@ -139,15 +137,12 @@ class _PatchedSessionLocal:
 
 @pytest.mark.asyncio
 async def test_leilao_publica_ride_created(corrida: Ride):
-    """ride_created deve ser publicado antes do scatter-gather."""
+    """ride_created deve ser publicado antes do wait de deadline."""
     with (
         patch("app.workers.auction_worker.AsyncSessionLocal", _PatchedSessionLocal),
-        patch("app.workers.auction_worker._chamar_grupo", new_callable=AsyncMock) as mock_chamar,
-        patch("app.workers.auction_worker._notificar_vencedor", new_callable=AsyncMock),
+        patch("asyncio.sleep", new_callable=AsyncMock),
         patch.object(rabbitmq_broker, "publish_event", new_callable=AsyncMock) as mock_pub,
     ):
-        mock_chamar.return_value = _proposta_passed("parceiro-1")
-
         await _executar_leilao(corrida.ride_uuid, auction_timeout=0, excluded_groups=[])
 
     event_types = [c.args[0] for c in mock_pub.call_args_list]
@@ -155,18 +150,15 @@ async def test_leilao_publica_ride_created(corrida: Ride):
 
 
 @pytest.mark.asyncio
-async def test_leilao_sem_propostas_aceitas_cancela_corrida(
+async def test_leilao_sem_propostas_cancela_corrida(
     corrida: Ride, db_teste: AsyncSession
 ):
-    """Todos os parceiros passando → corrida deve ser cancelada."""
+    """Nenhuma proposta no banco após o deadline → corrida cancelada."""
     with (
         patch("app.workers.auction_worker.AsyncSessionLocal", _PatchedSessionLocal),
-        patch("app.workers.auction_worker._chamar_grupo", new_callable=AsyncMock) as mock_chamar,
-        patch("app.workers.auction_worker._notificar_vencedor", new_callable=AsyncMock),
+        patch("asyncio.sleep", new_callable=AsyncMock),
         patch.object(rabbitmq_broker, "publish_event", new_callable=AsyncMock),
     ):
-        mock_chamar.return_value = _proposta_passed("parceiro-1")
-
         await _executar_leilao(corrida.ride_uuid, auction_timeout=0, excluded_groups=[])
 
     await db_teste.refresh(corrida)
@@ -175,18 +167,17 @@ async def test_leilao_sem_propostas_aceitas_cancela_corrida(
 
 
 @pytest.mark.asyncio
-async def test_leilao_todos_timeout_cancela_corrida(
-    corrida: Ride, db_teste: AsyncSession
+async def test_leilao_proposta_passed_cancela_corrida(
+    corrida: Ride, db_teste: AsyncSession, parceiro: Group
 ):
-    """Propostas atrasadas (timeout) são ignoradas por construção — corrida cancelada."""
+    """Proposta com status='passed' não conta como aceita → corrida cancelada."""
+    await _seed_proposta(db_teste, corrida, "parceiro-1", "passed")
+
     with (
         patch("app.workers.auction_worker.AsyncSessionLocal", _PatchedSessionLocal),
-        patch("app.workers.auction_worker._chamar_grupo", new_callable=AsyncMock) as mock_chamar,
-        patch("app.workers.auction_worker._notificar_vencedor", new_callable=AsyncMock),
+        patch("asyncio.sleep", new_callable=AsyncMock),
         patch.object(rabbitmq_broker, "publish_event", new_callable=AsyncMock),
     ):
-        mock_chamar.return_value = _proposta_timeout("parceiro-1")
-
         await _executar_leilao(corrida.ride_uuid, auction_timeout=0, excluded_groups=[])
 
     await db_teste.refresh(corrida)
@@ -195,18 +186,17 @@ async def test_leilao_todos_timeout_cancela_corrida(
 
 
 @pytest.mark.asyncio
-async def test_leilao_com_vencedor_define_status_match_e_publica_status_changed(
-    corrida: Ride, db_teste: AsyncSession
+async def test_leilao_com_vencedor_define_match_e_publica_status_changed(
+    corrida: Ride, db_teste: AsyncSession, parceiro: Group
 ):
-    """Com proposta aceita, corrida vai para MATCH e ride_status_changed é publicado."""
+    """Com proposta aceita no banco → corrida vai para MATCH e ride_status_changed é publicado."""
+    await _seed_proposta(db_teste, corrida, "parceiro-1", "accepted", price=50.0, eta=10)
+
     with (
         patch("app.workers.auction_worker.AsyncSessionLocal", _PatchedSessionLocal),
-        patch("app.workers.auction_worker._chamar_grupo", new_callable=AsyncMock) as mock_chamar,
-        patch("app.workers.auction_worker._notificar_vencedor", new_callable=AsyncMock),
+        patch("asyncio.sleep", new_callable=AsyncMock),
         patch.object(rabbitmq_broker, "publish_event", new_callable=AsyncMock) as mock_pub,
     ):
-        mock_chamar.return_value = _proposta_aceita("parceiro-1", price=50.0, eta=10)
-
         await _executar_leilao(corrida.ride_uuid, auction_timeout=0, excluded_groups=[])
 
     await db_teste.refresh(corrida)
@@ -219,20 +209,64 @@ async def test_leilao_com_vencedor_define_status_match_e_publica_status_changed(
 
 
 @pytest.mark.asyncio
+async def test_status_changed_com_vencedor_inclui_detalhes_completos(
+    corrida: Ride, db_teste: AsyncSession, parceiro: Group
+):
+    """ride_status_changed para leilão com vencedor deve carregar origin, destination e lockExpiresAt."""
+    await _seed_proposta(db_teste, corrida, "parceiro-1", "accepted", price=30.0, eta=5)
+
+    with (
+        patch("app.workers.auction_worker.AsyncSessionLocal", _PatchedSessionLocal),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+        patch.object(rabbitmq_broker, "publish_event", new_callable=AsyncMock) as mock_pub,
+    ):
+        await _executar_leilao(corrida.ride_uuid, auction_timeout=0, excluded_groups=[])
+
+    status_call = next(
+        c for c in mock_pub.call_args_list if c.args[0] == "ride_status_changed"
+    )
+    payload = status_call.args[4]
+    assert payload["assignedServiceId"] == "parceiro-1"
+    assert "origin" in payload
+    assert "destination" in payload
+    assert "passengerId" in payload
+    assert "lockExpiresAt" in payload
+
+
+@pytest.mark.asyncio
+async def test_leilao_desempate_menor_preco(
+    corrida: Ride, db_teste: AsyncSession
+):
+    """Com duas propostas aceitas, vence a de menor preço."""
+    await _seed_grupo(db_teste, "parceiro-2")
+    await _seed_proposta(db_teste, corrida, "parceiro-1", "accepted", price=80.0, eta=5)
+    await _seed_proposta(db_teste, corrida, "parceiro-2", "accepted", price=50.0, eta=10)
+
+    with (
+        patch("app.workers.auction_worker.AsyncSessionLocal", _PatchedSessionLocal),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+        patch.object(rabbitmq_broker, "publish_event", new_callable=AsyncMock),
+    ):
+        await _executar_leilao(corrida.ride_uuid, auction_timeout=0, excluded_groups=[])
+
+    await db_teste.refresh(corrida)
+    assert corrida.recipient_group_id == "parceiro-2"
+
+
+@pytest.mark.asyncio
 async def test_leilao_idempotente_para_leilao_ja_encerrado(
     corrida: Ride, db_teste: AsyncSession
 ):
-    """Leilão com auction_status != OPEN não deve reexecutar."""
+    """Leilão com auction_status != OPEN não deve reexecutar nem publicar eventos."""
     corrida.auction_status = AuctionStatus.CLOSED.value
     await db_teste.commit()
 
     with (
         patch("app.workers.auction_worker.AsyncSessionLocal", _PatchedSessionLocal),
-        patch("app.workers.auction_worker._chamar_grupo", new_callable=AsyncMock) as mock_chamar,
-        patch("app.workers.auction_worker._notificar_vencedor", new_callable=AsyncMock),
+        patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         patch.object(rabbitmq_broker, "publish_event", new_callable=AsyncMock) as mock_pub,
     ):
         await _executar_leilao(corrida.ride_uuid, auction_timeout=0, excluded_groups=[])
 
-    mock_chamar.assert_not_called()
     mock_pub.assert_not_called()
+    mock_sleep.assert_not_called()

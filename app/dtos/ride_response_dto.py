@@ -54,6 +54,13 @@ class ProposalSummaryDTO(BaseModel):
     respondedAt: Optional[datetime] = None
 
 
+class ProposalAcceptedDTO(BaseModel):
+    rideUuid: str
+    groupId: str
+    status: str
+    logicalTimestamp: int
+
+
 class AuctionResultDTO(BaseModel):
     rideUuid: str
     status: str                           # open | closed | no_proposals

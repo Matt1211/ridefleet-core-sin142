@@ -12,11 +12,14 @@ scrape_configs:
       - targets: ["core:8080"]
     metrics_path: /metrics
 
-  # Adicionar um job por grupo quando seus serviços estiverem disponíveis
-  # - job_name: "group-a"
-  #   static_configs:
-  #     - targets: ["group-a:8080"]
-  #   metrics_path: /metrics
+  # ── Grupos registrados ────────────────────────────────────────────────────
+  - job_name: "ridefleet-group"
+    static_configs:
+      - targets: ["nginx:80"]
+        labels:
+          group: "ridefleet-group"
+          group_name: "RideFleet AllWays"
+    metrics_path: /metrics
 
   - job_name: "prometheus"
     static_configs:

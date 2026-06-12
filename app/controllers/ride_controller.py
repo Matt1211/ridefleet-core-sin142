@@ -12,6 +12,7 @@ from app.exceptions import ConflictException, ForbiddenException, NotFoundExcept
 from app.dtos.ride_request_dto import (
     LockReleaseRequestDTO,
     LockRequestDTO,
+    ProposalSubmitDTO,
     RideRequestDTO,
     RideStatusUpdateDTO,
 )
@@ -21,6 +22,7 @@ from app.dtos.ride_response_dto import (
     LockConflictDTO,
     LockPunishmentDTO,
     LockResponseDTO,
+    ProposalAcceptedDTO,
     RideAcceptedDTO,
     RideListDTO,
     RideStatusDTO,
@@ -207,6 +209,35 @@ async def atualizar_status(
     except Exception:
         circuit_breaker.fail_increment()
         raise
+
+
+@router.post(
+    "/rides/{rideUuid}/proposals",
+    response_model=ProposalAcceptedDTO,
+    status_code=status.HTTP_201_CREATED,
+    summary="Submeter proposta de leilão (fluxo assíncrono)",
+    operation_id="submitProposal",
+    tags=["rides"],
+    description=(
+        "Endpoint chamado pelos grupos para submeter ou atualizar sua proposta "
+        "de preço/ETA após receber a notificação `ride_created` via webhook. "
+        "Idempotente: múltiplas chamadas do mesmo grupo atualizam a proposta existente. "
+        "Retorna 422 se o leilão já estiver encerrado."
+    ),
+)
+async def submeter_proposta(
+    rideUuid: str,
+    body: ProposalSubmitDTO,
+    grupo: AuthGroup,
+    service: Service,
+) -> ProposalAcceptedDTO:
+    logger.info(
+        "POST /rides/%s/proposals | group=%s status=%s",
+        rideUuid,
+        grupo.group_id,
+        body.status,
+    )
+    return await service.submeter_proposta(rideUuid, body, grupo)
 
 
 @router.get(

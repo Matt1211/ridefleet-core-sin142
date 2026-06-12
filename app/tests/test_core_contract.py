@@ -148,6 +148,38 @@ async def test_contract_patch_ride_status(cliente: AsyncClient, api_key: str, mo
 
 
 # ---------------------------------------------------------------------------
+# POST /api/v1/rides/{rideUuid}/proposals  →  201 ProposalAcceptedDTO
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_contract_post_proposal(cliente: AsyncClient, api_key: str, mock_rabbitmq):
+    ride_uuid = await _criar_corrida(cliente, api_key, mock_rabbitmq)
+    resp = await cliente.post(
+        f"{ENDPOINT_RIDES}/{ride_uuid}/proposals",
+        json={"status": "accepted", "estimatedEta": 5, "estimatedPrice": 15.50, "logicalTimestamp": 10},
+        headers={"X-API-Key": api_key},
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert isinstance(body["rideUuid"], str)
+    assert isinstance(body["groupId"], str)
+    assert isinstance(body["status"], str)
+    assert isinstance(body["logicalTimestamp"], int)
+
+
+@pytest.mark.asyncio
+async def test_contract_post_proposal_passed(cliente: AsyncClient, api_key: str, mock_rabbitmq):
+    ride_uuid = await _criar_corrida(cliente, api_key, mock_rabbitmq)
+    resp = await cliente.post(
+        f"{ENDPOINT_RIDES}/{ride_uuid}/proposals",
+        json={"status": "passed", "logicalTimestamp": 10},
+        headers={"X-API-Key": api_key},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "passed"
+
+
+# ---------------------------------------------------------------------------
 # GET /api/v1/rides/{rideUuid}/proposals  →  200 AuctionResultDTO
 # ---------------------------------------------------------------------------
 

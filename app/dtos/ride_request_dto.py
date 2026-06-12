@@ -51,6 +51,20 @@ class LockReleaseRequestDTO(BaseModel):
     serviceId: str = Field(..., min_length=1, examples=["group-b"])
 
 
+class ProposalSubmitDTO(BaseModel):
+    """Proposta de um grupo submetida assincronamente ao leilão."""
+
+    status: str = Field(
+        "accepted",
+        pattern="^(accepted|passed)$",
+        description="'accepted' com oferta de preço/ETA, ou 'passed' para recusar.",
+        examples=["accepted"],
+    )
+    estimatedEta: Optional[int] = Field(None, ge=0, examples=[5])
+    estimatedPrice: Optional[float] = Field(None, ge=0, examples=[15.50])
+    logicalTimestamp: int = Field(..., ge=0, examples=[42])
+
+
 class RideIncomingNotificationDTO(BaseModel):
     """
     Payload enviado pelo core aos grupos via POST {serviceUrl}/rides/incoming
