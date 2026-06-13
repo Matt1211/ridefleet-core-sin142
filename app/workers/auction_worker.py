@@ -24,6 +24,7 @@ from typing import List, Optional
 
 import httpx
 
+from app.core.circuit_breaker_manager import circuit_breaker_manager
 from app.core.http_client import http_client
 from app.core.lamport_clock import lamport_clock
 from app.database import AsyncSessionLocal
@@ -128,6 +129,7 @@ async def _executar_leilao(
             g for g in todos_grupos
             if g.group_id != ride.origin_group_id
             and g.group_id not in excluded_groups
+            and circuit_breaker_manager.get_breaker(g.group_id).check_state()
         ]
 
         nomes_participantes = [g.group_id for g in grupos_participantes]
@@ -223,6 +225,7 @@ async def _executar_leilao(
         todas_propostas: List[RideProposal] = []
 
         for grupo, resultado in zip(grupos_participantes, resultados):
+            breaker = circuit_breaker_manager.get_breaker(grupo.group_id)
             if isinstance(resultado, Exception):
                 logger.warning(
                     "Erro ao contatar grupo '%s' para corrida %s: %s",
@@ -237,22 +240,33 @@ async def _executar_leilao(
                     service_url=grupo.service_url,
                     status="error",
                 )
+                breaker.fail_increment()
             else:
                 prop = resultado
                 prop.ride_fk = ride.id
                 prop.ride_uuid = ride_uuid
                 prop.group_id = grupo.group_id
                 prop.service_url = grupo.service_url
-                if prop.status == "accepted":
-                    propostas_aceitas.append(prop)
-                    logger.info(
-                        "Proposta aceita: grupo '%s' | corrida %s | preço: %s | ETA: %s",
-                        grupo.group_id,
-                        ride_uuid,
-                        prop.estimated_price,
-                        prop.estimated_eta,
-                    )
+                if prop.status in ("accepted", "passed"):
+                    breaker.success()
+                    if prop.status == "accepted":
+                        propostas_aceitas.append(prop)
+                        logger.info(
+                            "Proposta aceita: grupo '%s' | corrida %s | preço: %s | ETA: %s",
+                            grupo.group_id,
+                            ride_uuid,
+                            prop.estimated_price,
+                            prop.estimated_eta,
+                        )
+                    else:
+                        logger.info(
+                            "Proposta de '%s' para corrida %s: status '%s'",
+                            grupo.group_id,
+                            ride_uuid,
+                            prop.status,
+                        )
                 else:
+                    breaker.fail_increment()
                     logger.info(
                         "Proposta de '%s' para corrida %s: status '%s'",
                         grupo.group_id,
