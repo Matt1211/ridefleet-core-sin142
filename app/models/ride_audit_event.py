@@ -8,7 +8,7 @@ reconstruir a relação happened-before entre serviços distintos.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String
+from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, JSON, String
 
 from app.models.base import Base
 
@@ -26,7 +26,7 @@ class RideAuditEvent(Base):
     ride_uuid = Column(String, nullable=False, index=True)
     event_type = Column(String, nullable=False)
     service_id = Column(String, nullable=False)
-    logical_timestamp = Column(Integer, nullable=False)
+    logical_timestamp = Column(BigInteger, nullable=False)
     wall_clock_time = Column(
         DateTime,
         default=_utcnow_naive,

@@ -7,7 +7,7 @@ metadados necessários para reproduzir o critério de seleção do vencedor.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import BigInteger, Column, DateTime, Float, ForeignKey, Integer, String
 
 from app.models.base import Base
 
@@ -32,7 +32,7 @@ class RideProposal(Base):
     # Preenchidos apenas quando status == "accepted"
     estimated_eta = Column(Integer, nullable=True)
     estimated_price = Column(Float, nullable=True)
-    logical_timestamp = Column(Integer, nullable=True)
+    logical_timestamp = Column(BigInteger, nullable=True)
 
     # Observabilidade
     response_time_ms = Column(Integer, nullable=True)
