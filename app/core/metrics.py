@@ -45,6 +45,13 @@ saga_transitions_total = Counter(
     ["from_state", "to_state", "service"]
 )
 
+# Entregas de webhook do core para os grupos (via webhook_dispatcher)
+webhook_deliveries_total = Counter(
+    "ridefleet_webhook_deliveries_total",
+    "Total de entregas de webhook do core para os grupos, por serviço e resultado",
+    ["service", "status"]
+)
+
 def metrics_endpoint():
     from app.core.circuit_breaker_manager import circuit_breaker_manager
 

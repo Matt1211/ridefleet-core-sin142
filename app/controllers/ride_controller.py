@@ -12,6 +12,7 @@ from app.exceptions import ConflictException, ForbiddenException, NotFoundExcept
 from app.dtos.ride_request_dto import (
     LockReleaseRequestDTO,
     LockRequestDTO,
+    ProposalSubmissionDTO,
     RideRequestDTO,
     RideStatusUpdateDTO,
 )
@@ -21,6 +22,7 @@ from app.dtos.ride_response_dto import (
     LockConflictDTO,
     LockPunishmentDTO,
     LockResponseDTO,
+    ProposalSummaryDTO,
     RideAcceptedDTO,
     RideListDTO,
     RideStatusDTO,
@@ -227,6 +229,37 @@ async def buscar_propostas(
     service: Service,
 ) -> AuctionResultDTO:
     return await service.buscar_propostas(rideUuid)
+
+
+@router.post(
+    "/rides/{rideUuid}/proposals",
+    response_model=ProposalSummaryDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Enviar proposta para um leilão (fluxo assíncrono)",
+    operation_id="submitRideProposal",
+    tags=["rides"],
+    responses={409: {"description": "Leilão já encerrado para esta corrida"}},
+    description=(
+        "Recebe a proposta de um grupo para uma corrida em leilão. Substitui a "
+        "resposta síncrona ao convite POST /rides/incoming: o grupo responde aqui, "
+        "de forma assíncrona, até o auctionDeadline. O grupo proponente é "
+        "identificado pela API Key. Retorna 409 se o leilão já estiver encerrado."
+    ),
+)
+async def enviar_proposta(
+    rideUuid: str,
+    body: ProposalSubmissionDTO,
+    grupo: AuthGroup,
+    service: Service,
+) -> ProposalSummaryDTO:
+    logger.info(
+        "POST /rides/%s/proposals | group=%s eta=%ds price=%.2f",
+        rideUuid,
+        grupo.group_id,
+        body.estimatedEta,
+        body.estimatedPrice,
+    )
+    return await service.submeter_proposta(rideUuid, body, grupo)
 
 
 @router.get(

@@ -49,7 +49,7 @@ async def registrar_grupo(
 
 
 @router.get(
-    "/groups/register",
+    "/groups",
     status_code=200,
     response_model=List[GroupInfo],
     summary="Listar grupos registrados",
@@ -63,5 +63,24 @@ async def listar_grupos(
     """
     Requer autenticação via header X-API-Key.
     A API Key de cada grupo não é exposta na resposta.
+    """
+    return await servico.listar_grupos()
+
+
+@router.get(
+    "/groups/register",
+    status_code=200,
+    response_model=List[GroupInfo],
+    summary="Listar grupos registrados (legacy)",
+    operation_id="listGroupsLegacy",
+    tags=["auth"],
+)
+async def listar_grupos_legacy(
+    servico: AuthService = Depends(_criar_servico),
+    _grupo_autenticado: Group = Depends(verify_api_key),
+) -> List[GroupInfo]:
+    """
+    Deprecated: use GET /api/v1/groups instead.
+    Requer autenticação via header X-API-Key.
     """
     return await servico.listar_grupos()

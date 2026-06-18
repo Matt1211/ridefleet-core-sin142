@@ -1,7 +1,9 @@
 version: "3.9"
 
 # Docker Compose do core — sobe o core + observabilidade.
-# Uso: docker compose -f infra/docker-compose.core.yml up -d
+# Uso: docker compose -f infra/docker-compose.core.yml up -d --build
+# Nota: Use --build para garantir que a imagem seja construída do source atual,
+# evitando problemas com imagens pré-compiladas obsoletas.
 
 services:
 
@@ -43,7 +45,7 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/api/v1/health"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/v1/health',timeout=3).status==200 else 1)"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -104,6 +106,7 @@ services:
 
 networks:
   ridefleet-net:
+    name: ridefleet-net
     driver: bridge
 
 volumes:

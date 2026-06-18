@@ -57,7 +57,7 @@ cp infra/.env.example infra/.env
 
 # 3. Subir o stack completo (core + RabbitMQ + banco + observabilidade)
 make up
-# ou: docker compose -f infra/docker-compose.core.yml up -d
+# ou: docker compose -f infra/docker-compose.core.yml up -d --build
 
 # 4. Verificar health
 curl http://localhost:8080/api/v1/health
@@ -101,7 +101,7 @@ make health     # Verifica o endpoint /api/v1/health
 | Método | Rota | Autenticação | Descrição |
 |--------|------|-------------|-----------|
 | `POST` | `/api/v1/groups/register` | Nenhuma | Registrar grupo e obter API Key (idempotente) |
-| `GET` | `/api/v1/groups/register` | `X-API-Key` | Listar grupos registrados |
+| `GET` | `/api/v1/groups` | `X-API-Key` | Listar grupos registrados |
 | `POST` | `/api/v1/rides` | `X-API-Key` | Criar corrida e iniciar leilão (202 Accepted) |
 | `GET` | `/api/v1/rides` | `X-API-Key` | Listar corridas com filtros (estado, origem, atribuído) |
 | `GET` | `/api/v1/rides/{rideUuid}/status` | `X-API-Key` | Consultar estado atual da saga + lock |

@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from app.core.lamport_clock import lamport_clock
-from app.dtos.ride_request_dto import LockRequestDTO, LockReleaseRequestDTO, RideRequestDTO, RideStatusUpdateDTO
+from app.dtos.ride_request_dto import LockRequestDTO, LockReleaseRequestDTO, ProposalSubmissionDTO, RideRequestDTO, RideStatusUpdateDTO
 from app.dtos.ride_response_dto import (
     AuditEventDTO,
     AuditLogDTO,
@@ -36,6 +36,7 @@ from app.models.group import Group
 from app.models.ride import AuctionStatus, Ride, RideStatus
 from app.models.ride_audit_event import RideAuditEvent
 from app.models.ride_lock import RideLock
+from app.models.ride_proposal import RideProposal
 from app.rabbitmq import rabbitmq_broker
 from app.repositories.audit_repository import AuditRepository
 from app.repositories.group_repository import GroupRepository
@@ -353,6 +354,74 @@ class RideService:
                 )
                 for p in propostas
             ],
+        )
+
+    async def submeter_proposta(
+        self, ride_uuid: str, dados: ProposalSubmissionDTO, grupo: Group
+    ) -> ProposalSummaryDTO:
+        """
+        Registra a proposta de um grupo para uma corrida em leilão (fluxo assíncrono).
+
+        Substitui a coleta síncrona via scatter-gather: em vez de o core chamar o
+        grupo e ler a proposta na resposta HTTP, o grupo envia a proposta aqui e o
+        auction_worker a lê do banco ao fim do auctionDeadline.
+
+        O grupo proponente é determinado pela API Key autenticada. A corrida precisa
+        existir e estar com o leilão aberto; propostas para leilões já encerrados
+        são rejeitadas com 409.
+        """
+        ride = await self._exigir_corrida(ride_uuid)
+
+        if ride.auction_status != AuctionStatus.OPEN.value:
+            raise ConflictException(
+                f"Leilão da corrida '{ride_uuid}' já encerrado "
+                f"(status: '{ride.auction_status}'). Proposta recusada."
+            )
+
+        ts_core = await lamport_clock.update(dados.logicalTimestamp)
+
+        proposta = RideProposal(
+            ride_fk=ride.id,
+            ride_uuid=ride_uuid,
+            group_id=grupo.group_id,
+            service_url=grupo.service_url,
+            status="accepted",
+            estimated_eta=dados.estimatedEta,
+            estimated_price=dados.estimatedPrice,
+            logical_timestamp=dados.logicalTimestamp,
+            responded_at=datetime.utcnow(),
+        )
+        proposta = await self.proposal_repo.criar(proposta)
+
+        await self._registrar_evento(
+            ride_uuid,
+            ride.id,
+            "proposal_submitted",
+            grupo.group_id,
+            ts_core,
+            {
+                "estimatedEta": dados.estimatedEta,
+                "estimatedPrice": dados.estimatedPrice,
+            },
+        )
+
+        logger.info(
+            "Proposta recebida: corrida %s | grupo '%s' | preço %.2f | ETA %ds",
+            ride_uuid,
+            grupo.group_id,
+            dados.estimatedPrice,
+            dados.estimatedEta,
+        )
+
+        return ProposalSummaryDTO(
+            groupId=proposta.group_id,
+            serviceUrl=proposta.service_url,
+            status=proposta.status,
+            estimatedEta=proposta.estimated_eta,
+            estimatedPrice=proposta.estimated_price,
+            logicalTimestamp=proposta.logical_timestamp,
+            responseTimeMs=proposta.response_time_ms,
+            respondedAt=proposta.responded_at,
         )
 
     async def buscar_audit_log(self, ride_uuid: str) -> AuditLogDTO:

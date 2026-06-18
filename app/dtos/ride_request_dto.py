@@ -2,7 +2,8 @@
 DTOs de entrada para os endpoints de corrida e notificações de saída.
 
 Correspondem aos schemas RideRequest, RideStatusUpdate, LockRequest,
-LockReleaseRequest e RideIncomingNotification do contrato OpenAPI.
+LockReleaseRequest, RideIncomingNotification e ProposalSubmission do
+contrato OpenAPI.
 """
 
 from datetime import datetime
@@ -66,3 +67,25 @@ class RideIncomingNotificationDTO(BaseModel):
     auctionDeadline: datetime = Field(
         ..., description="Prazo limite para envio de proposta (UTC ISO-8601)."
     )
+
+
+class ProposalSubmissionDTO(BaseModel):
+    """
+    Proposta enviada por um grupo ao core via POST {core}/rides/{rideUuid}/proposals.
+
+    Substitui a antiga resposta síncrona 200 do convite POST {serviceUrl}/rides/incoming:
+    no fluxo assíncrono o grupo responde aqui, até o auctionDeadline. O grupo
+    proponente é determinado pela API Key autenticada — não pelo corpo.
+
+    Regras herdadas do contrato (IncomingProposal):
+        estimatedEta:   obrigatório, mínimo 1
+        estimatedPrice: obrigatório, mínimo 0
+    """
+
+    estimatedEta: int = Field(
+        ..., ge=1, examples=[300], description="ETA estimado em segundos (mínimo 1)."
+    )
+    estimatedPrice: float = Field(
+        ..., ge=0, examples=[18.5], description="Preço estimado (mínimo 0)."
+    )
+    logicalTimestamp: int = Field(..., ge=0, examples=[21])
